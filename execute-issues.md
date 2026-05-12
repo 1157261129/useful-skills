@@ -1,3 +1,8 @@
+---
+name: execute-issues
+description: Execute already-written issues end-to-end with worker subagents. Use when the user wants implementation work, not issue breakdown, and provides explicit issue paths, numbers, or references.
+---
+
 # Execute Issues
 
 Use this skill when the user wants implementation, not issue breakdown.
