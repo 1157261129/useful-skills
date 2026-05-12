@@ -88,6 +88,15 @@ Workers should also be instructed:
 - Avoid reverting or overwriting work from other workers unless the issue explicitly requires it and the conflict is understood.
 - Prefer small, safe, incremental changes with verification after meaningful milestones.
 
+## Dispatch Format
+
+- The first dispatch in a layer must use a valid tool payload. Do not probe the schema with a malformed call first.
+- For parallel runnable issues, use one `multi_tool_use.parallel` call with one `functions.spawn_agent` entry per issue.
+- `tool_uses[].parameters` must be a JSON object that matches `functions.spawn_agent` exactly.
+- Use `message` or `items`, not both. If TDD is enabled, use `items` and attach the `tdd` skill plus one plain-text brief.
+- Omit unused optional fields.
+- If a schema retry is needed, fix it silently. Do not surface internal payload-correction notes to the user unless the retry also fails.
+
 ## Worker Supervision
 
 After dispatching workers, the main agent should supervise them until all workers in the current layer have reached a terminal state.
