@@ -129,9 +129,12 @@ If a worker is slow but active:
 If a worker appears idle or silent for a long time:
 
 - Check whether the execution environment still shows activity.
+- If the worker state is unknown, treat it as still active.
 - Ask the worker for a concise status update.
+- Do not treat silence alone as evidence that the worker stopped, failed, or finished.
 - If it responds with progress, continue waiting.
 - If it reports a blocker, handle it as blocked.
+- Do not locally take over the worker's unfinished scope unless you have confirmed terminal state, explicit blockage, or clear crash/unreachable evidence.
 - If it has clearly crashed or become unreachable, mark the issue failed and record the reason.
 
 ## Issue Write-Back
