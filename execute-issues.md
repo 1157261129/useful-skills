@@ -1,13 +1,13 @@
 ---
 name: execute-issues
-description: Execute already-written issues end-to-end with worker subagents. Use when the user wants implementation work, not issue breakdown, and provides explicit issue paths, numbers, or references.
+description: Use when executing already-written implementation issues with explicit issue paths, numbers, or references, and the user wants implementation rather than issue breakdown.
 ---
 
 # Execute Issues
 
 Use this skill when the user wants implementation, not issue breakdown.
 
-This skill coordinates implementation through worker subagents. The main agent must remain active until the execution is complete, blocked, or explicitly stopped by the user. Do not terminate early merely because subagents are taking a long time. If a worker is still making progress and is not blocked, allow it to continue.
+Coordinate implementation through worker subagents. The main agent owns orchestration, dependency tracking, supervision, issue write-back, and user-facing progress updates. Keep implementation, debugging, verification, and detailed review inside workers by default. Do not terminate early merely because workers take time.
 
 ## Inputs
 
@@ -15,78 +15,62 @@ This skill coordinates implementation through worker subagents. The main agent m
 - Do not scan whole issue directories by default.
 - Read each requested issue and its `Blocked by` section first.
 - Pull in only the minimum extra context needed to execute safely.
-- If a blocker is referenced but not included in the requested set, treat it as an external blocker and do not schedule downstream issues until the user includes it or explicitly overrides it.
+- If a blocker is referenced but not included in the requested set, treat it as external and do not schedule downstream issues until the user includes it or explicitly overrides it.
 
 ## Before Dispatch
 
-Ask the user these questions before spawning any subagent:
+Ask before spawning any worker:
 
-1. Should subagents use `gpt-5.3-codex` with `xhigh`?
-2. If not, offer concise alternatives:
-   - `gpt-5.5` with `high`
-   - `gpt-5.4` with `high`
-   - `gpt-5.4-mini` with `medium`
-3. Should subagents use the `tdd` skill?
+1. Should workers use `gpt-5.3-codex` with `xhigh`?
+2. If not, offer concise alternatives: `gpt-5.5` with `high`, `gpt-5.4` with `high`, or `gpt-5.4-mini` with `medium`.
+3. Should workers use the `tdd` skill?
 
-Do not silently choose a different model or TDD policy after these questions are answered.
+Do not silently change the selected model or TDD policy later.
 
-## Build the Execution Graph
+## Execution Graph
 
 - Parse dependencies from `Blocked by`.
-- Build a DAG from the requested issues.
-- Reject cycles or ambiguous dependency references and explain the exact issue files involved.
+- Build a DAG from requested issues.
+- Reject cycles or ambiguous dependency references and name the exact issue files involved.
 - Schedule work by topological layer.
 - Run all currently unblocked issues in the same layer in parallel.
 - Do not dispatch downstream issues until every required upstream issue has completed successfully.
 
 For a chain like `01 -> 02 -> 03/04`, run `01`, then `02`, then `03` and `04` together.
 
-## Main-Agent Liveness and Patience
+`Blocked by` example:
 
-The main agent is responsible for staying alive, supervising subagents, and keeping the overall execution moving.
+```markdown
+## Blocked by
 
-- The main agent must not exit, stop, or produce a final handoff while any dispatched subagent is still running.
-- The main agent must wait patiently for subagents that are still making progress.
-- Do not impose a short timeout on worker subagents by default.
-- Do not cancel or replace a worker merely because it is taking longer than expected.
-- As long as a worker is not blocked, crashed, or clearly looping without progress, continue waiting and allow it to finish its work.
-- Prefer long-running supervision over premature termination.
-- The main agent may provide brief progress updates to the user, but must not treat waiting as failure.
-- If the runtime requires periodic activity to avoid idleness, the main agent should periodically check worker status and summarize progress instead of terminating.
+- [02 issue2](./02-issue.md)
+- [03 issue3](./03-issue.md)
+- [04 issue4](./04-issue.md)
+```
 
-A worker should be considered still valid to continue when any of the following are true:
+## Main-Agent Scope
 
-- It is reading, editing, testing, debugging, or verifying.
-- It reports partial progress.
-- It is running a command that is expected to take time.
-- It is investigating a failure and has not declared itself blocked.
-- It is waiting on local verification, builds, tests, or dependency installation.
+- Stay alive until execution is complete, blocked, failed, or explicitly stopped by the user.
+- Do not produce a final handoff while any dispatched worker remains active.
+- Do not pull large code, diff, test, or review context into the main agent when a worker can inspect and report it.
+- Read additional local code in the main agent only to unblock orchestration or resolve contradictory worker reports.
+- If substantial implementation or review work is needed, assign it to a worker.
 
-A worker should be considered blocked only when it explicitly reports a blocker or when there is clear evidence that it cannot proceed without external input.
-
-## Subagent Contract
+## Worker Contract
 
 For each runnable issue:
 
 - Spawn one `worker` subagent.
 - Give it exclusive responsibility for that issue.
 - Tell it it is not alone in the codebase and must not revert work from other agents or the user.
+- Tell it it runs in the same working directory as the main agent; by default, code changes land in that runtime directory.
 - Pass the issue reference, acceptance criteria, satisfied dependency assumptions, and only the context needed for that issue.
-- If the user enabled TDD, attach the `tdd` skill and instruct the worker to use red-green-refactor in vertical slices.
-- Tell the worker to implement the issue end-to-end, run the most relevant verification it can, and report:
-  - `completed` or `failed`
-  - changed files
-  - tests or commands run
-  - remaining risks
+- If TDD is enabled, attach the `tdd` skill and instruct the worker to use red-green-refactor in vertical slices.
+- Tell the worker it owns issue-local code reading, implementation, debugging, verification, self-review, and final reporting.
+- Tell the worker to continue until the issue is completed, failed, or genuinely blocked.
+- Tell the worker to report terminally with `completed`, `failed`, or `blocked`, changed files, commands run, and remaining risks.
 
-Workers should also be instructed:
-
-- Continue working until the issue is completed, failed, or genuinely blocked.
-- Do not stop early only because the task is large or verification takes time.
-- If progress is possible, keep going.
-- If blocked, report the exact blocker, what was attempted, and what input is needed.
-- Avoid reverting or overwriting work from other workers unless the issue explicitly requires it and the conflict is understood.
-- Prefer small, safe, incremental changes with verification after meaningful milestones.
+Workers should prefer small, safe, incremental changes with verification after meaningful milestones. If blocked, they must report the exact blocker, what was attempted, and what input is needed.
 
 ## Dispatch Format
 
@@ -95,58 +79,55 @@ Workers should also be instructed:
 - `tool_uses[].parameters` must be a JSON object that matches `functions.spawn_agent` exactly.
 - Use `message` or `items`, not both. If TDD is enabled, use `items` and attach the `tdd` skill plus one plain-text brief.
 - Omit unused optional fields.
-- If a schema retry is needed, fix it silently. Do not surface internal payload-correction notes to the user unless the retry also fails.
+- If a schema retry is needed, fix it silently. Do not surface internal payload-correction notes unless the retry also fails.
 
-## Worker Supervision
+## Supervision Defaults
 
-After dispatching workers, the main agent should supervise them until all workers in the current layer have reached a terminal state.
+Default to trust and patience:
 
-Terminal worker states are:
+- Presume a worker is making progress unless it explicitly reports `failed` or `blocked`, reaches another terminal state, or there is clear crash/unreachable evidence.
+- Treat reading, editing, testing, debugging, verifying, preparing a report, running long commands, investigating failures, dependency installation, and local build/test waits as progress.
+- If a worker is not clearly looping without progress, acknowledge it as active or progressing in user updates.
+- Silence, slow replies, or lack of visible main-thread evidence are not failure, blockage, or idleness.
+- Do not cancel, replace, take over, or mark a worker failed merely because it takes longer than expected.
+- Do not dispatch dependent downstream issues while required upstream workers are non-terminal.
 
-- `completed`
-- `failed`
-- `blocked`
+A worker is blocked only when it explicitly reports a blocker or there is clear evidence it cannot proceed without external input.
 
-Non-terminal states are:
+## Status Checks
 
-- running
-- reading context
-- implementing
-- testing
-- debugging
-- verifying
-- preparing report
+Use status checks as liveness communication, not terminal-state collection:
 
-The main agent must not mark a worker failed simply because it is still in a non-terminal state.
-
-If a worker is slow but active:
-
-- Continue waiting.
-- Optionally ask it for a concise progress update.
-- Do not dispatch dependent downstream issues.
-- Do not finalize the task.
-
-If a worker appears idle or silent for a long time:
-
-- Check whether the execution environment still shows activity.
-- If the worker state is unknown, treat it as still active.
-- Ask the worker for a concise status update.
-- Do not treat silence alone as evidence that the worker stopped, failed, or finished.
-- If it responds with progress, continue waiting.
+- If a worker is slow but active, continue waiting; optionally ask for a concise progress update.
+- If a worker appears silent for a long time, ask for status and continue waiting.
+- If the worker does not reply, try communicating again later instead of speculating about its state.
+- If the worker state is unknown, treat it as active unless clear crash/unreachable evidence exists.
+- If it replies with progress, continue waiting.
 - If it reports a blocker, handle it as blocked.
-- Do not locally take over the worker's unfinished scope unless you have confirmed terminal state, explicit blockage, or clear crash/unreachable evidence.
-- If it has clearly crashed or become unreachable, mark the issue failed and record the reason.
+- If it clearly crashed or became unreachable, mark the issue failed and record the reason.
+
+Do not locally take over unfinished worker scope unless terminal state, explicit blockage, or clear crash/unreachable evidence is confirmed.
+
+## 30-Minute Terminal Window
+
+Once a worker is on track, give it a 30-minute terminal window before expecting a terminal report. "On track" means it accepted the brief or is reading, editing, testing, debugging, verifying, running commands, or reporting partial progress.
+
+- When tooling permits, wait with a 30-minute timeout, e.g. `wait_agent(timeout_ms: 1800000)`.
+- If the environment requires shorter waits, treat each timeout as a heartbeat, not a terminal event.
+- At the end of a window, if the worker still appears to be executing appropriately and has not reported failure or blockage, extend by another 30 minutes.
+- Repeat extensions while progress is presumed and no terminal condition is confirmed.
+- Do not perform terminal-state催收. Ask for concise status only when needed for liveness or coordination.
 
 ## Issue Write-Back
 
 Before spawning a worker:
 
 - Ensure the issue has a `## Comments` section; create it if missing.
-- Append a short execution entry including date, selected model, TDD on or off, and dependency context.
+- Append a short execution entry including date, selected model, TDD on/off, and dependency context.
 
 After the worker finishes:
 
-- Append a result entry under `## Comments` with success or failure, a concise reason, changed files, and a verification summary.
+- Append a result entry under `## Comments` with success or failure, concise reason, changed files, and verification summary.
 
 Status line rules:
 
@@ -155,18 +136,14 @@ Status line rules:
 - On failure, set `Status:` to `Needs human attention`.
 - On blocked because an upstream issue failed, set `Status:` to `Needs human attention` and explain the blocker.
 - On blocked because required dependency input is missing or ambiguous, set `Status:` to `Needs more information`.
-
-If the project already uses Chinese status values, preserve them instead:
-
-- Failure or upstream failure: `需人工处理`
-- Missing or ambiguous dependency input: `待补充信息`
+- If the project already uses Chinese status values, use `需人工处理` for failures/upstream failures and `待补充信息` for missing or ambiguous dependency input.
 
 ## Failure Handling
 
 - If any issue fails, do not dispatch its downstream dependents.
-- Mark each skipped dependent as blocked in the final summary and in the issue comment log.
-- Write the upstream blocker path or identifier and the failure reason into each skipped issue.
-- Continue running other issues in the same layer only if they are independent of the failed issue.
+- Mark each skipped dependent as blocked in the final summary and issue comment log.
+- Write the upstream blocker path or identifier and failure reason into each skipped issue.
+- Continue running independent issues in the same layer.
 - Do not stop the entire execution merely because one independent issue failed.
 - Keep supervising all other already-running independent workers until they complete, fail, or become genuinely blocked.
 
@@ -187,16 +164,14 @@ Do not dispatch a downstream layer while any required upstream worker is still r
 
 ## Progress Updates
 
-The main agent should provide concise user-facing updates when execution takes time.
+Provide concise user-facing updates when execution takes time:
 
-Progress updates should include:
+- Which layer is running.
+- Which issues are active and presumed progressing.
+- Which issues completed, failed, or blocked.
+- Whether the main agent is waiting inside a 30-minute window or has extended one.
 
-- Which layer is currently running.
-- Which issues are still in progress.
-- Which issues completed or failed.
-- Whether the main agent is still waiting on active workers.
-
-Do not ask the user to confirm continuation while workers are still active and unblocked. Continue supervising automatically.
+Do not ask the user to confirm continuation while workers are active and unblocked. Continue supervising automatically. Do not turn progress updates into code walkthroughs unless the user asks for implementation detail.
 
 ## Final Handoff
 
@@ -208,18 +183,16 @@ Return a concise summary with:
 4. verification summary
 5. next recommended user action
 
-The final handoff may only be produced after:
+Produce the final handoff only after:
 
-- all runnable workers have reached terminal states,
+- all runnable workers reached terminal states,
 - all issue write-backs are complete,
-- downstream blocked issues have been recorded,
-- and no active subagent remains running.
+- downstream blocked issues are recorded,
+- and no active worker remains running.
 
 ## Boundaries
 
-- This skill executes already-written issues.
-- It does not break plans into issues; use `to-issues` for that.
-- Prefer one subagent per runnable issue in the current layer.
-- Keep context minimal.
-- Do not forward unrelated issue files to every subagent.
-- Do not terminate the main agent while subagents are still active and unblocked.
+- Execute already-written issues; do not break plans into issues. Use `to-issues` for issue breakdown.
+- Prefer one worker per runnable issue in the current layer.
+- Keep context minimal and issue-local work inside workers.
+- Do not forward unrelated issue files to every worker.
