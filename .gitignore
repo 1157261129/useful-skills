@@ -2,3 +2,5 @@
 .agents/
 .codex/
 .ace-tool/
+.claude/
+*:Zone.Identifier

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Execute Issues"
+  short_description: "Execute issue plans with worker subagents"
+  default_prompt: "Use $execute-issues to execute the requested issue files with worker subagents."

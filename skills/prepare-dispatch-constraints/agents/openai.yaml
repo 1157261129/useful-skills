@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prepare Dispatch Constraints"
+  short_description: "Prepare issue dispatch constraints"
+  default_prompt: "Use $prepare-dispatch-constraints before dispatching workers for issues that lack Dispatch Constraints."
