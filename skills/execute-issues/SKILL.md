@@ -80,7 +80,7 @@ Before spawning any worker in the requested execution set:
 
 For each runnable issue:
 
-- Spawn one `worker` subagent.
+- Spawn one issue worker subagent; when `fork_context: true`, assign worker responsibility in the brief instead of setting `agent_type`.
 - Give it exclusive responsibility for that issue.
 - Tell it it is not alone in the codebase and must not revert work from other agents or the user.
 - Tell it it runs in the same working directory as the main agent; by default, code changes land in that runtime directory.
@@ -102,6 +102,9 @@ Workers should prefer small, safe, incremental changes with verification after m
 - The first dispatch in a layer must use a valid tool payload. Do not probe the schema with a malformed call first.
 - For parallel runnable issues, use one `multi_tool_use.parallel` call with one `functions.spawn_agent` entry per issue, capped by the selected concurrency.
 - `tool_uses[].parameters` must be a JSON object that matches `functions.spawn_agent` exactly.
+- Pass the selected worker model and reasoning in every dispatch payload as `model` and `reasoning_effort`. Do not rely on inherited parent settings to satisfy the selected dispatch profile.
+- For the default profile, use `model: "gpt-5.3-codex"` and `reasoning_effort: "xhigh"`.
+- If `fork_context: true` is used, omit `agent_type`; forked agents inherit the parent agent type and must not also receive `agent_type: "worker"`. Treat worker ownership as part of the prompt contract instead.
 - Use `message` or `items`, not both. If TDD is forced, use `items` and attach the `tdd` skill plus one plain-text brief.
 - Omit unused optional fields.
 - If a schema retry is needed, fix it silently. Do not surface internal payload-correction notes unless the retry also fails.
