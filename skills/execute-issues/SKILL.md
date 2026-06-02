@@ -25,13 +25,14 @@ Ask one combined question before spawning any worker:
 
 Use the default worker dispatch profile?
 
-- Model: `gpt-5.4` with `xhigh`.
+- Model: choose by the current agent surface. Use `gpt-5.4` for Codex workers; use `Sonnet 4.6` for Claude workers, translated to the valid model identifier accepted by the active subagent tool.
+- Reasoning: the main agent selects each worker's reasoning effort from task difficulty, ambiguity, risk, dependency depth, and verification burden. Do not classify a task as simple lightly; use a lower effort only when the issue is tiny, isolated, well-specified, and low-risk.
 - TDD: worker decides based on task complexity, risk, and implementation scope; frontend page work does not use TDD.
 - Concurrency: at most 2 worker subagents at once.
 
-If the user declines or provides overrides, collect model, TDD policy, and max concurrency together. Model alternatives: `gpt-5.5` with `high`, `gpt-5.4` with `high`, or `gpt-5.4-mini` with `medium`.
+If the user declines or provides overrides, collect model, reasoning policy or per-worker reasoning overrides, TDD policy, and max concurrency together. Offer only model and reasoning alternatives that are available in the current agent surface.
 
-Do not silently change the selected model, TDD policy, or concurrency later.
+Do not silently change the selected model, reasoning policy, TDD policy, or concurrency later.
 
 ## Execution Graph
 
@@ -103,7 +104,9 @@ Workers should prefer small, safe, incremental changes with verification after m
 - For parallel runnable issues, use one `multi_tool_use.parallel` call with one `functions.spawn_agent` entry per issue, capped by the selected concurrency.
 - `tool_uses[].parameters` must be a JSON object that matches `functions.spawn_agent` exactly.
 - Pass the selected worker model and reasoning in every dispatch payload as `model` and `reasoning_effort`. Do not rely on inherited parent settings to satisfy the selected dispatch profile.
-- For the default profile, use `model: "gpt-5.4"` and `reasoning_effort: "xhigh"`.
+- For the default profile, derive `model` from the current agent surface: Codex uses `gpt-5.4`; Claude uses `Sonnet 4.6` with the active tool's valid model identifier.
+- Set `reasoning_effort` to the main agent's selected value for that worker. Choose the least excessive effort that is still safe for the issue; when uncertain, prefer a higher effort over misclassifying nontrivial work as simple.
+- Treat prior review feedback that the same issue was completed poorly as a signal to consider increasing `reasoning_effort` on subsequent attempts.
 - If `fork_context: true` is used, omit `agent_type`; forked agents inherit the parent agent type and must not also receive `agent_type: "worker"`. Treat worker ownership as part of the prompt contract instead.
 - Use `message` or `items`, not both. If TDD is forced, use `items` and attach the `tdd` skill plus one plain-text brief.
 - Omit unused optional fields.
@@ -184,6 +187,7 @@ After an implementation worker reaches a terminal state:
 - The review worker reviews only; it must not modify code unless the user explicitly asks.
 - Treat review as part of issue completion. Do not unblock downstream issues until required review is terminal.
 - If review fails, treat the issue as failed and do not dispatch its downstream dependents.
+- If the review worker finds the issue was completed poorly, it must record that assessment in the shared channel and recommend considering a higher reasoning effort for any later attempt on the same issue.
 - If the implementation worker omits a review recommendation, ask it to complete the terminal report. If unavailable, review nontrivial changes by default unless a global stop has been tripped.
 
 Status line rules:
