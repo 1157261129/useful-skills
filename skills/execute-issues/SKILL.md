@@ -25,7 +25,7 @@ Ask one combined question before spawning any worker:
 
 Use the default worker dispatch profile?
 
-- Model: `gpt-5.3-codex` with `xhigh`.
+- Model: `gpt-5.4` with `xhigh`.
 - TDD: worker decides based on task complexity, risk, and implementation scope; frontend page work does not use TDD.
 - Concurrency: at most 2 worker subagents at once.
 
@@ -103,7 +103,7 @@ Workers should prefer small, safe, incremental changes with verification after m
 - For parallel runnable issues, use one `multi_tool_use.parallel` call with one `functions.spawn_agent` entry per issue, capped by the selected concurrency.
 - `tool_uses[].parameters` must be a JSON object that matches `functions.spawn_agent` exactly.
 - Pass the selected worker model and reasoning in every dispatch payload as `model` and `reasoning_effort`. Do not rely on inherited parent settings to satisfy the selected dispatch profile.
-- For the default profile, use `model: "gpt-5.3-codex"` and `reasoning_effort: "xhigh"`.
+- For the default profile, use `model: "gpt-5.4"` and `reasoning_effort: "xhigh"`.
 - If `fork_context: true` is used, omit `agent_type`; forked agents inherit the parent agent type and must not also receive `agent_type: "worker"`. Treat worker ownership as part of the prompt contract instead.
 - Use `message` or `items`, not both. If TDD is forced, use `items` and attach the `tdd` skill plus one plain-text brief.
 - Omit unused optional fields.
