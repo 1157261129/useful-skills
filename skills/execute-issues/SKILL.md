@@ -7,7 +7,7 @@ description: Use when executing already-written implementation issues with expli
 
 Use this skill when the user wants implementation, not issue breakdown.
 
-Coordinate implementation through worker subagents. The main agent owns orchestration, dependency tracking, supervision, issue write-back, and user-facing progress updates. Keep implementation, debugging, verification, and detailed review inside workers by default. Do not terminate early merely because workers take time.
+Coordinate implementation through worker subagents. The main agent owns orchestration, dependency tracking, supervision, issue write-back, and user-facing progress updates. Keep implementation, repair, debugging, verification, and detailed review inside workers by default. Do not terminate early merely because workers take time.
 
 If a worker's shared channel contains a terminal-looking report while the worker process is still running, keep waiting. Do not interrupt, cancel, replace, take over, or produce a final handoff until the worker itself has reached a terminal state.
 
@@ -39,9 +39,11 @@ Do not silently change the selected model, reasoning policy, TDD policy, or conc
 - Parse dependencies from `Blocked by`.
 - Build a DAG from requested issues.
 - Reject cycles or ambiguous dependency references and name the exact issue files involved.
-- Schedule work by topological layer.
-- Run currently unblocked issues in the same layer in parallel, capped by the selected concurrency.
-- Do not dispatch downstream issues until every required upstream issue has completed successfully.
+- Use topological layers to determine dependency eligibility, not as batch barriers.
+- Maintain a ready queue for implementation, review, and repair subagents.
+- When the concurrency pool has capacity, dispatch ready subagents immediately, capped by the selected concurrency.
+- A subagent is ready only when its own gates are satisfied: dependency completion for implementation, terminal implementation for review, and terminal fixable review findings for repair.
+- Do not dispatch downstream implementation until every required upstream issue has completed implementation and required review/repair successfully.
 
 For a chain like `01 -> 02 -> 03/04`, run `01`, then `02`, then `03` and `04` together.
 
@@ -59,10 +61,10 @@ For a chain like `01 -> 02 -> 03/04`, run `01`, then `02`, then `03` and `04` to
 
 - Stay alive until execution is complete, blocked, failed, or explicitly stopped by the user.
 - Do not produce a final handoff while any dispatched worker remains active.
-- Do not pull large code, diff, test, or review context into the main agent when a worker can inspect and report it.
+- Do not pull large code, diff, test, review, or repair context into the main agent when a worker can inspect and report it.
 - Read additional local code in the main agent only to unblock orchestration or resolve contradictory worker reports.
 - Run `prepare-dispatch-constraints` before dispatch only for requested issues that do not already contain a `Dispatch Constraints` block in their shared channel.
-- If substantial implementation or review work is needed, assign it to a worker.
+- If substantial implementation, review, or repair work is needed, assign it to a worker.
 - Use a durable shared channel for worker status: issue `## Comments` by default, or an explicitly provided shared status file/memory key. Do not rely on worker chat-only status text.
 
 ## Dispatch Constraints
@@ -79,7 +81,7 @@ Before spawning any worker in the requested execution set:
 
 ## Worker Contract
 
-For each runnable issue:
+For each runnable implementation issue:
 
 - Spawn one issue worker subagent; when `fork_context: true`, assign worker responsibility in the brief instead of setting `agent_type`.
 - Give it exclusive responsibility for that issue.
@@ -100,8 +102,9 @@ Workers should prefer small, safe, incremental changes with verification after m
 
 ## Dispatch Format
 
-- The first dispatch in a layer must use a valid tool payload. Do not probe the schema with a malformed call first.
-- For parallel runnable issues, use one `multi_tool_use.parallel` call with one `functions.spawn_agent` entry per issue, capped by the selected concurrency.
+- The first dispatch in a scheduling cycle must use a valid tool payload. Do not probe the schema with a malformed call first.
+- When filling multiple open concurrency slots, use one `multi_tool_use.parallel` call with one `functions.spawn_agent` entry per ready implementation, review, or repair subagent.
+- Never exceed the selected concurrency; count implementation, review, and repair subagents in the same pool.
 - `tool_uses[].parameters` must be a JSON object that matches `functions.spawn_agent` exactly.
 - Pass the selected worker model and reasoning in every dispatch payload as `model` and `reasoning_effort`. Do not rely on inherited parent settings to satisfy the selected dispatch profile.
 - For the default profile, derive `model` from the current agent surface: Codex uses `gpt-5.4`; Claude uses `Sonnet 4.6` with the active tool's valid model identifier.
@@ -148,7 +151,7 @@ Use this flow when a worker crashes, becomes unreachable, or has no usable runti
 - Try to wake that worker up to 5 times through the available worker/status channel.
 - Record each wake attempt in the shared channel when possible.
 - If the worker resumes, continue normal supervision.
-- If all 5 wake attempts fail, trip a global stop: do not wake any subagent again, do not dispatch implementation or review subagents, and do not take over any issue work in the main agent.
+- If all 5 wake attempts fail, trip a global stop: do not wake any subagent again, do not dispatch implementation, review, or repair subagents, and do not take over any issue work in the main agent.
 - After a global stop, wait only for already-running workers to complete or abnormally terminate, then end this execution with unresolved issues recorded.
 
 ## 30-Minute Terminal Window
@@ -159,7 +162,7 @@ Once a worker is on track, give it a 30-minute terminal window before expecting 
 - If the environment requires shorter waits, treat each timeout as a heartbeat, not a terminal event.
 - At the end of a window, if the worker still appears to be executing appropriately and has not reported failure or blockage, extend by another 30 minutes.
 - Repeat extensions while progress is presumed and no terminal condition is confirmed.
-- Do not perform terminal-state催收. Ask for concise status only when needed for liveness or coordination.
+- Do not chase terminal reports. Ask for concise status only when needed for liveness or coordination.
 
 ## Issue Write-Back
 
@@ -176,18 +179,24 @@ After the worker finishes:
 
 - Append a result entry under `## Comments` with success or failure, concise reason, changed files, and verification summary.
 - Base results on durable shared-channel reports, not worker-private chat-only statements.
-- Include the worker's review recommendation and reason.
+- Include the worker's review or repair recommendation and reason when applicable.
 
-## Review Workers
+## Review And Repair Workers
 
 After an implementation worker reaches a terminal state:
 
-- If its terminal report says review is needed, dispatch one review worker for that issue unless a global stop has been tripped.
+- If its terminal report says review is needed, enqueue one review worker for that issue unless a global stop has been tripped.
+- Dispatch the review worker as soon as concurrency capacity exists. Do not wait for peer implementation workers in the same dependency layer to finish.
 - Give the review worker the issue file, acceptance criteria, dispatch constraints, implementation terminal report, changed files, and verification commands/results.
 - The review worker reviews only; it must not modify code unless the user explicitly asks.
-- Treat review as part of issue completion. Do not unblock downstream issues until required review is terminal.
-- If review fails, treat the issue as failed and do not dispatch its downstream dependents.
-- If the review worker finds the issue was completed poorly, it must record that assessment in the shared channel and recommend considering a higher reasoning effort for any later attempt on the same issue.
+- Treat required review and repair as part of issue completion. Do not unblock downstream issues until the issue's implementation, required review, and required repair loop are terminal and successful.
+- If review reports fixable findings, enqueue one repair implementation worker for the same issue unless a global stop has been tripped.
+- Dispatch the repair worker as soon as concurrency capacity exists. Do not wait for unrelated review workers in the same dependency layer to finish.
+- Give the repair worker the issue file, acceptance criteria, dispatch constraints, review findings, prior terminal report, changed files, and verification commands/results.
+- A repair worker may modify code only within the reviewed issue scope and must report terminally with `completed`, `failed`, or `blocked`, changed files, commands run, remaining risks, and whether another review is needed.
+- Repeat review/repair only while each cycle reports concrete progress. Stop on success, explicit failure, genuine blockage, unfixable findings, repeated findings without progress, or global stop.
+- If review or repair fails, blocks, or reports unfixable findings, treat the issue as failed and do not dispatch its downstream dependents.
+- If the review worker finds the issue was completed poorly, it must record that assessment in the shared channel and recommend considering a higher reasoning effort for any repair or later attempt on the same issue.
 - If the implementation worker omits a review recommendation, ask it to complete the terminal report. If unavailable, review nontrivial changes by default unless a global stop has been tripped.
 
 Status line rules:
@@ -202,43 +211,42 @@ Status line rules:
 ## Failure Handling
 
 - If any issue fails, do not dispatch its downstream dependents.
-- If a required review fails, treat the reviewed issue as failed.
+- If required review or repair fails, treat the reviewed issue as failed.
 - Mark each skipped dependent as blocked in the final summary and issue comment log.
 - Write the upstream blocker path or identifier and failure reason into each skipped issue.
-- Continue running independent issues in the same layer.
+- Continue running independent ready work in the same dependency layer.
 - Do not stop the entire execution merely because one independent issue failed.
 - Keep supervising all other already-running independent workers until they complete, fail, or become genuinely blocked.
 
-## Layer Execution Rules
+## Ready-Queue Scheduling
 
-Before layer 1:
+Before first dispatch:
 
 1. Ensure every requested issue has reusable `Dispatch Constraints`, running `prepare-dispatch-constraints` only for missing issues.
 2. Complete the full issue-set write-back pass for every requested issue.
 3. Do not dispatch any worker until that pass is complete.
 
-For each topological layer after that:
+After the initial pass, schedule continuously:
 
-1. Identify all issues whose dependencies are satisfied.
-2. Dispatch one worker per runnable issue, capped by the selected concurrency.
-3. Keep the main agent alive while workers run.
-4. Wait until every worker in the layer reaches a terminal state.
-5. Dispatch and finish required review workers for completed issues.
-6. Write back each implementation and review result to its issue.
-7. Determine which downstream issues are now unblocked.
-8. Skip downstream issues whose dependencies failed, are blocked, or failed review.
-9. Continue to the next layer only after all required upstream issues and reviews completed successfully.
+1. Maintain a concurrency pool capped by the selected concurrency.
+2. Recompute ready work whenever a worker reaches a terminal state or a concurrency slot opens.
+3. Dispatch ready implementation, review, or repair subagents immediately until the pool is full or no ready work remains.
+4. Do not wait for all implementation workers in a dependency layer to finish before dispatching review for a completed issue in that layer.
+5. Do not wait for all review workers in a dependency layer to finish before dispatching repair for an issue with terminal fixable review findings.
+6. Write back each implementation, review, and repair result promptly after its worker is terminal.
+7. Skip downstream issues whose dependencies failed, are blocked, have unfixable review findings, or failed required repair.
+8. Continue until no worker is running and no ready work remains.
 
-If a global stop is tripped during any layer, stop scheduling further implementation or review work and follow `Abnormal Worker Stops`.
+If a global stop is tripped during scheduling, stop scheduling further implementation, review, or repair work and follow `Abnormal Worker Stops`.
 
-Do not dispatch a downstream layer while any required upstream worker is still running.
+Do not dispatch downstream implementation while any required upstream implementation, review, or repair worker is still running or unresolved.
 
 ## Progress Updates
 
 Provide concise user-facing updates when execution takes time:
 
-- Which layer is running.
-- Which issues are active and presumed progressing.
+- Which dependency layer or ready queue is active.
+- Which implementation, review, or repair workers are active and presumed progressing.
 - Which issues completed, failed, or blocked.
 - Whether the main agent is waiting inside a 30-minute window or has extended one.
 
@@ -248,10 +256,10 @@ Do not ask the user to confirm continuation while workers are active and unblock
 
 Return a concise summary with:
 
-1. execution order by layer
+1. execution order by dependency layer and actual dispatch sequence
 2. per-issue outcome
 3. blocked issues and exact blocker chains
-4. review outcomes
+4. review and repair outcomes
 5. verification summary
 6. next recommended user action
 
@@ -265,6 +273,6 @@ Produce the final handoff only after:
 ## Boundaries
 
 - Execute already-written issues; do not break plans into issues. Use `to-issues` for issue breakdown.
-- Prefer one worker per runnable issue in the current layer.
+- Prefer one implementation worker per runnable issue; use review and repair workers only after their prerequisites are terminal.
 - Keep context minimal and issue-local work inside workers.
 - Do not forward unrelated issue files to every worker.
