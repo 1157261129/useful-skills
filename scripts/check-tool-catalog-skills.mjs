@@ -25,7 +25,7 @@ const toolCatalogSkills = [
 ];
 
 const discoveryTerminologyDocs = [
-  'docs/adr/0034-store-discovery-run-files-in-user-cache.md',
+  'docs/adr/0003-discovery-workflow-and-scanning.md',
 ];
 
 const disallowedDiscoveryArtifactPhrases = [
