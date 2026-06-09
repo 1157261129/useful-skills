@@ -1,6 +1,6 @@
 # Consult before coding with progressive verification
 
-When invoked, the consulting skill identifies the project index, inspects the capability tag vocabulary when the task involves reusable utilities or templates, maps the task to canonical tags, queries candidates, inspects or verifies relevant results, reads source anchors, and only then uses confirmed utilities or templates in code. If the task names an exact catalog selector, class, or method, the skill may skip tag vocabulary lookup and go directly to show or verify.
+When invoked, the consulting skill identifies the project index, inspects the capability tag vocabulary when the task involves reusable utilities or templates, maps the task to canonical tags, queries results, inspects or verifies relevant entries, reads source anchors, and only then uses confirmed utilities or templates in code. If the task names an exact catalog selector, class, or method, the skill may skip tag vocabulary lookup and go directly to show or verify.
 
 **Consequences**
 

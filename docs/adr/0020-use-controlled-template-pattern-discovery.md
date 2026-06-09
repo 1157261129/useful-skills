@@ -1,6 +1,6 @@
 # Use controlled template pattern discovery
 
-The first version does not perform general-purpose clone detection. Template discovery uses language-specific structural fingerprints and controlled pattern detectors, then relies on the discovery agent to decide whether frequent candidates are useful template code.
+The first version does not perform general-purpose clone detection. Template discovery uses language-specific structural fingerprints and controlled pattern detectors, then relies on the worker review and Catalog Finalizer flow to decide whether frequent Findings represent useful Template Code.
 
 **Consequences**
 

@@ -5,6 +5,6 @@ The first version of the tool catalog supports Java Spring Boot Maven projects, 
 **Consequences**
 
 - Discovery uses language-specific detectors instead of one generic parser.
-- Index records need language and framework metadata so consulting can filter candidates by the current coding context.
+- Index records need language and framework metadata so consulting can filter results by the current coding context.
 - Backend and frontend records share one target project index instead of separate databases.
 - Vue discovery targets Vue 3 common structures, utility modules, composables, and recurring template patterns; Vue 2 mixins and page-level component analysis are outside the first version.

@@ -1,10 +1,10 @@
 # Batch discovery decisions after scanning
 
-The discovery skill scans first, then presents a compact decision report instead of interrupting the user for each ambiguous candidate. User decisions are focused on unresolved utility origin priorities, ambiguous duplicates, and extraction candidates.
+The discovery skill scans first, then routes Findings through the worker DAG before presenting compact blocking decisions. User decisions are focused on unresolved utility origin priorities, unresolved Review Group conflicts, business-specific template risk, and extraction opportunities.
 
 **Consequences**
 
-- High-confidence accepted and rejected candidates do not require user confirmation.
+- High-confidence accepted entries, suppressions, and deferrals do not require user confirmation after Decision Review passes.
 - SQLite is updated after required user decisions are resolved.
-- Discovery agents classify candidates as automatic accept, automatic ignore, or ask user. User confirmation is reserved for ambiguous utility boundaries, conflicting utility origins, business-specific template risk, and extraction opportunities.
-- Discovery agents finish reviewing the full Discovery Review Pack before asking the user, then batch the highest-impact ambiguous decisions instead of interrupting on each candidate.
+- Catalog Finalizer workers classify Review Groups as accepted entries, suppressions, deferrals, or blocking questions. The main agent does not choose final semantic actions from raw dry-run output.
+- Discovery workers finish bounded review and merge before asking the user, then batch the highest-impact blocking decisions instead of interrupting on each Finding.

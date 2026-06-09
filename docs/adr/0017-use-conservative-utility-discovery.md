@@ -1,6 +1,6 @@
 # Use conservative utility discovery
 
-Discovery automatically indexes only high-confidence project-owned utility artifacts. Ambiguous candidates are reported for review instead of being written to the project index.
+Discovery automatically indexes only high-confidence project-owned utility artifacts after worker review and Decision Review. Ambiguous Findings are reported for Review Group handling instead of being written to the project index.
 
 **Consequences**
 

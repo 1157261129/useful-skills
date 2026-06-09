@@ -1,6 +1,6 @@
 # Discovery does not run builds or tests by default
 
-Discovery scans files, extracts structural candidates, counts references, verifies symbol presence, and updates SQLite. It does not run project builds or test suites by default.
+Discovery scans files, extracts structural Findings, counts references, verifies symbol presence, and updates SQLite. It does not run project builds or test suites by default.
 
 **Consequences**
 

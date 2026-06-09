@@ -4,5 +4,5 @@ The discover command supports full refresh, changed-path refresh, dry-run report
 
 **Consequences**
 
-- Agents can inspect candidates before writing index changes.
+- Agents can inspect Findings and worker review artifacts before writing index changes.
 - Incremental refresh after implementation can target only changed paths.

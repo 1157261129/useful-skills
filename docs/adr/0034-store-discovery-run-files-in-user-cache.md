@@ -1,6 +1,6 @@
 # Store discovery run files in the user cache
 
-Discovery Findings data, Discovery Review Packs, and Discovery Decision Files are stored under a user-level Tool Catalog run directory. The target project working tree is not used for transient discovery artifacts.
+Discovery Findings data, worker review artifacts, and Discovery Decision Files are stored under a user-level Tool Catalog run directory. The target project working tree is not used for transient discovery artifacts.
 
 **Consequences**
 
