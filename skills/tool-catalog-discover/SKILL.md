@@ -20,13 +20,15 @@ Use this skill to prepare or refresh a Target Project's Project Index. Discovery
    - Full refresh: `tool-catalog discover --full --dry-run --root <project> --json`.
    - Changed refresh: `tool-catalog discover --changed <paths...> --dry-run --root <project> --json`.
    - Use `--language`, `--include`, and `--exclude` only to narrow the deterministic scan.
+   - Treat the Markdown Discovery Review Pack as the primary agent input; use raw candidate JSON only for audit, debugging, or decision-file validation.
 2. Review candidates:
-   - Accept only observed Utility Artifacts, observed external utility usage, and Template Code.
-   - Ignore false positives with a short reason; defer only when the user must decide.
-   - Write concise English summaries, usage notes, and limitations. Keep semantic judgement in this skill, not in the CLI.
+   - Review entries grouped by Utility Artifact or Template Code from the facts-only Discovery Review Pack.
+   - Accept only final reusable entries; ignore false positives with a short reason; defer only when the user must decide.
+   - Enrich only accepted Utility Artifacts, artifact members, and Template Code with Capability Tags and Selection Descriptions.
+   - Write concise English `summary`, optional `usage_notes`, and optional `limitations`. Keep semantic judgement in this skill, not in the CLI.
 3. Apply:
-   - Save a decisions JSON that includes the dry-run `scan`, candidate payloads, and `decisions` keyed by `candidate_id`.
-   - Use actions `accept`, `ignore`, or `defer`; every candidate must be resolved before SQLite is updated.
+   - Save a Discovery Decision File with accepted entries in their final catalog shape and ignored or deferred candidates traceable to original `candidate_id` values.
+   - Do not apply raw dry-run candidate JSON directly; apply only reviewed decisions.
    - Run `tool-catalog discover --apply <decisions.json> --root <project> --json`.
 4. Report:
    - Summarize accepted entries, ignored candidates, cleanup scope, required decisions, and follow-up commands from the apply output.
@@ -38,3 +40,4 @@ Use this skill to prepare or refresh a Target Project's Project Index. Discovery
 - Do not run project builds or tests unless the user asks; discovery uses lightweight structural scanning.
 - Store only relative source anchors from the Target Project.
 - Keep catalog prose English and deterministic CLI inputs structured.
+- Do not expect the CLI to generate tag hints, suggested actions, semantic risk flags, or agent-quality judgments.

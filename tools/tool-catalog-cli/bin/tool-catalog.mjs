@@ -23,6 +23,8 @@ Usage:
   tool-catalog discover --full --dry-run [--root <path>] [--language <name>] [--include <glob>] [--exclude <glob>] [--json]
   tool-catalog discover --changed <paths...> --dry-run [--root <path>] [--language <name>] [--include <glob>] [--exclude <glob>] [--json]
   tool-catalog discover --apply <decisions.json> [--root <path>] [--json]
+  tool-catalog tags [--root <path>] [--json]
+  tool-catalog query --tag <tag> --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
   tool-catalog query --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
   tool-catalog show <selector> [--root <path>] [--json]
   tool-catalog verify <selector> [--root <path>] [--json]
@@ -32,6 +34,7 @@ Commands:
   doctor            Check runtime dependencies required by the Tool Catalog CLI.
   config            Manage user-level Tool Catalog configuration.
   discover          Extract reviewable discovery candidates or apply reviewed decisions.
+  tags              List canonical capability tags available in the project index.
   query             Search the existing project index for reusable entries.
   show              Show compact details for one indexed entry.
   verify            Verify indexed source anchors against the current working tree.
@@ -80,16 +83,25 @@ Output:
 const QUERY_HELP_TEXT = `Tool Catalog query
 
 Usage:
+  tool-catalog query --tag <tag> --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
   tool-catalog query --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
 
 Options:
   --goal <text>          Describe the coding goal to search for.
+  --tag <tag>            Exact canonical Capability Tag filter. May be repeated or comma-separated; repeated tags use AND semantics.
   --current-file <path>  Relative or in-root file path used for weak module proximity ranking.
   --language <name>      Limit results to a language. May be repeated or comma-separated.
   --framework <name>     Limit results to a framework. May be repeated or comma-separated.
   --artifact-type <type> Limit results to an artifact/result type. May be repeated or comma-separated.
   --limit <n>            Maximum results to return. Defaults to 10, maximum 50.
   --json                 Print machine-readable JSON output.`;
+
+const TAGS_HELP_TEXT = `Tool Catalog tags
+
+Usage:
+  tool-catalog tags [--root <path>] [--json]
+
+The tags command is read-only. It lists canonical Capability Tags, concise descriptions, optional aliases, and indexed entry counts for the resolved project.`;
 
 const SHOW_HELP_TEXT = `Tool Catalog show
 
@@ -138,14 +150,44 @@ const CATALOG_COUNT_KEYS = [
   'origin_priorities',
   'artifacts',
   'artifact_members',
+  'member_signatures',
+  'capability_tags',
+  'entry_capability_tags',
   'template_patterns',
   'template_instances',
   'observed_external_usages',
   'ignored_candidates',
+  'deferred_candidates',
   'fts_entries',
 ];
 const MAX_SUMMARY_CHARS = 280;
 const MAX_SNIPPET_CHARS = 500;
+const CAPABILITY_TAG_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
+const MAX_REVIEW_SNIPPET_CHARS = 240;
+const REVIEW_SNIPPET_LINE_COUNT = 3;
+const MIN_CONSULT_SCHEMA_VERSION = 4;
+const CAPABILITY_TAG_VOCABULARY = new Map([
+  ['api-client', {
+    description: 'Reusable API client request helpers and request-flow templates.',
+    aliases: ['api', 'client-request'],
+  }],
+  ['http', {
+    description: 'HTTP request helpers and transport-facing utility code.',
+    aliases: ['network', 'rest'],
+  }],
+  ['request', {
+    description: 'Request construction, dispatch, and reusable request patterns.',
+    aliases: ['call', 'fetch'],
+  }],
+  ['string', {
+    description: 'String normalization, inspection, and text-manipulation helpers.',
+    aliases: ['strings', 'text'],
+  }],
+  ['utility', {
+    description: 'General-purpose reusable helpers when no narrower tag fits.',
+    aliases: ['helper', 'helpers'],
+  }],
+]);
 const DEFAULT_EXCLUDED_DIRS = new Set([
   '.cache',
   '.git',
@@ -274,6 +316,10 @@ function printDiscoverHelp() {
 
 function printQueryHelp() {
   process.stdout.write(`${QUERY_HELP_TEXT}\n`);
+}
+
+function printTagsHelp() {
+  process.stdout.write(`${TAGS_HELP_TEXT}\n`);
 }
 
 function printShowHelp() {
@@ -557,10 +603,41 @@ function parsePositiveIntegerOption(value, optionName, maximum) {
   return integer;
 }
 
+function normalizeCapabilityTagFilter(value, fieldName = 'Capability Tag') {
+  const normalized = normalizeNullableString(value)?.toLowerCase() ?? null;
+  if (!normalized) {
+    throw new ToolCatalogError(`${fieldName} must not be empty.`, 2);
+  }
+  if (!CAPABILITY_TAG_PATTERN.test(normalized)) {
+    throw new ToolCatalogError(`${fieldName} '${value}' is invalid. Use lowercase letters, numbers, underscore, or dash.`, 2);
+  }
+  return normalized;
+}
+
+function parseTagsOptions(args, globalOptions) {
+  const tagsOptions = {
+    ...globalOptions,
+  };
+
+  for (const argument of args) {
+    if (argument === '--help' || argument === '-h') {
+      tagsOptions.help = true;
+      continue;
+    }
+    if (argument.startsWith('--')) {
+      throw new ToolCatalogError(`Unsupported tags option: ${argument}`, 2);
+    }
+    throw new ToolCatalogError(`Unexpected tags argument: ${argument}`, 2);
+  }
+
+  return tagsOptions;
+}
+
 function parseQueryOptions(args, globalOptions) {
   const queryOptions = {
     ...globalOptions,
     goal: undefined,
+    tags: [],
     currentFile: undefined,
     languages: [],
     frameworks: [],
@@ -582,6 +659,15 @@ function parseQueryOptions(args, globalOptions) {
     }
     if (argument.startsWith('--goal=')) {
       queryOptions.goal = argument.slice('--goal='.length);
+      continue;
+    }
+    if (argument === '--tag') {
+      appendCommaSeparated(queryOptions.tags, parseRepeatedValue(args, index, '--tag'));
+      index += 1;
+      continue;
+    }
+    if (argument.startsWith('--tag=')) {
+      appendCommaSeparated(queryOptions.tags, argument.slice('--tag='.length));
       continue;
     }
     if (argument === '--current-file') {
@@ -646,6 +732,7 @@ function parseQueryOptions(args, globalOptions) {
   queryOptions.languages = [...new Set(queryOptions.languages.map((item) => item.toLowerCase()))];
   queryOptions.frameworks = [...new Set(queryOptions.frameworks.map((item) => item.toLowerCase()))];
   queryOptions.artifactTypes = [...new Set(queryOptions.artifactTypes.map((item) => item.toLowerCase()))];
+  queryOptions.tags = [...new Set(queryOptions.tags.map((item) => normalizeCapabilityTagFilter(item, '--tag')))];
 
   return queryOptions;
 }
@@ -1091,6 +1178,41 @@ function truncateText(value, maxLength) {
   }
 
   return `${normalized.slice(0, maxLength - 3)}...`;
+}
+
+function normalizeRequiredText(value, fieldName, maxLength = MAX_SUMMARY_CHARS) {
+  const normalized = truncateText(value, maxLength);
+  if (!normalized) {
+    throw new ToolCatalogError(`${fieldName} is required.`, 2);
+  }
+
+  return normalized;
+}
+
+function normalizeCapabilityTags(value, fieldName) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ToolCatalogError(`${fieldName} must include at least one Capability Tag.`, 2);
+  }
+
+  const byTag = new Map();
+  for (const item of value) {
+    const rawTag = isPlainObject(item) ? item.tag : item;
+    const tag = normalizeNullableString(rawTag)?.toLowerCase() ?? null;
+    if (!tag) {
+      throw new ToolCatalogError(`${fieldName} entries must include a tag value.`, 2);
+    }
+    if (!CAPABILITY_TAG_PATTERN.test(tag)) {
+      throw new ToolCatalogError(`${fieldName} contains invalid tag '${rawTag}'. Use lowercase letters, numbers, underscore, or dash.`, 2);
+    }
+
+    const description = isPlainObject(item) ? truncateText(item.description, MAX_SUMMARY_CHARS) : null;
+    byTag.set(tag, {
+      tag,
+      description: description ?? byTag.get(tag)?.description ?? null,
+    });
+  }
+
+  return [...byTag.values()];
 }
 
 function transactionSql(sql) {
@@ -2219,8 +2341,246 @@ function pluralize(count, singular, plural = `${singular}s`) {
   return count === 1 ? singular : plural;
 }
 
-function renderCandidateLine(candidate) {
-  return `- \`${candidate.candidate_id}\` ${candidate.confidence ? `(${candidate.confidence}) ` : ''}${candidate.name ?? candidate.origin_key} at \`${candidate.source_anchor?.text ?? candidate.instances?.[0]?.source_anchor?.text ?? 'n/a'}\``;
+function allDiscoveryCandidates(output) {
+  return [
+    ...output.candidates.utility_artifacts,
+    ...output.candidates.observed_external_usages,
+    ...output.candidates.template_patterns,
+  ];
+}
+
+function buildDiscoveryRunId(output) {
+  const generatedAt = output.generated_at.replace(/[-:.TZ]/g, '').slice(0, 17);
+  const candidateKeys = allDiscoveryCandidates(output).map((candidate) => candidate.candidate_id).sort().join('\n');
+  return `${generatedAt}-${output.scan.mode}-${sha256(`${output.project.project_id}\n${candidateKeys}`).slice(0, 12)}`;
+}
+
+function discoveryRunFilePaths(context, output) {
+  const runId = buildDiscoveryRunId(output);
+  const runDirectory = path.join(context.projectDir, 'runs', runId);
+  return {
+    run_id: runId,
+    run_directory: runDirectory,
+    candidates_path: path.join(runDirectory, 'candidates.json'),
+    review_pack_path: path.join(runDirectory, 'review-pack.md'),
+    decisions_template_path: path.join(runDirectory, 'decisions.template.json'),
+  };
+}
+
+function writeJsonRunFile(filePath, value) {
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+function sourceAnchorText(anchor) {
+  return anchor?.text ?? 'n/a';
+}
+
+function javaPackageName(candidate) {
+  if (candidate.language !== 'java' || !candidate.qualified_name || !candidate.name) {
+    return null;
+  }
+  const suffix = `.${candidate.name}`;
+  return candidate.qualified_name.endsWith(suffix)
+    ? candidate.qualified_name.slice(0, -suffix.length)
+    : null;
+}
+
+function readAnchorSnippet(rootPath, anchor) {
+  if (!anchor?.path || !Number.isInteger(anchor.line)) {
+    return null;
+  }
+
+  const absolutePath = path.resolve(rootPath, anchor.path);
+  if (!isInsideRoot(rootPath, absolutePath) || !fs.existsSync(absolutePath)) {
+    return null;
+  }
+
+  const lines = fs.readFileSync(absolutePath, 'utf8').split(/\r?\n/);
+  const startIndex = Math.max(0, anchor.line - 1);
+  const snippet = lines
+    .slice(startIndex, startIndex + REVIEW_SNIPPET_LINE_COUNT)
+    .map((line) => line.trimEnd())
+    .join('\n')
+    .trim();
+
+  return truncateText(snippet, MAX_REVIEW_SNIPPET_CHARS);
+}
+
+function markdownSnippet(rootPath, language, anchor) {
+  const snippet = readAnchorSnippet(rootPath, anchor);
+  if (!snippet) {
+    return null;
+  }
+
+  return `\`\`\`${language ?? ''}\n${snippet}\n\`\`\``;
+}
+
+function renderUtilityArtifactReviewPack(output, lines) {
+  lines.push('## Utility Artifacts');
+  if (output.candidates.utility_artifacts.length === 0) {
+    lines.push('', '- None detected.');
+    return;
+  }
+
+  for (const candidate of output.candidates.utility_artifacts) {
+    lines.push('', `### ${candidate.name}`);
+    lines.push(`- Candidate: \`${candidate.candidate_id}\``);
+    lines.push(`- Path: \`${candidate.source_anchor?.path ?? 'n/a'}\``);
+    lines.push(`- Anchor: \`${sourceAnchorText(candidate.source_anchor)}\``);
+    if (candidate.qualified_name) {
+      lines.push(`- Qualified name: \`${candidate.qualified_name}\``);
+    }
+    const packageName = javaPackageName(candidate);
+    if (packageName) {
+      lines.push(`- Package: \`${packageName}\``);
+    }
+    lines.push(`- Language: \`${candidate.language}\``);
+    lines.push(`- Artifact type: \`${candidate.artifact_type}\``);
+    if (candidate.module_path) {
+      lines.push(`- Module path: \`${candidate.module_path}\``);
+    }
+    lines.push('', '#### Members');
+    if (candidate.members.length === 0) {
+      lines.push('', '- None detected.');
+      continue;
+    }
+    for (const member of candidate.members) {
+      lines.push('', `- \`${member.name}\``);
+      lines.push(`  - Member key: \`${member.member_key}\``);
+      lines.push(`  - Type: \`${member.member_type}\``);
+      lines.push(`  - Signature: \`${member.signature}\``);
+      lines.push(`  - Anchor: \`${sourceAnchorText(member.source_anchor)}\``);
+      const snippet = markdownSnippet(output.project.root_path, candidate.language, member.source_anchor);
+      if (snippet) {
+        lines.push('  - Snippet:');
+        lines.push(indentMarkdown(snippet, '    '));
+      }
+    }
+  }
+}
+
+function renderObservedExternalUsageReviewPack(output, lines) {
+  lines.push('', '## Observed External Usages');
+  if (output.candidates.observed_external_usages.length === 0) {
+    lines.push('', '- None detected.');
+    return;
+  }
+
+  for (const candidate of output.candidates.observed_external_usages) {
+    lines.push('', `### ${candidate.origin_key}`);
+    lines.push(`- Candidate: \`${candidate.candidate_id}\``);
+    lines.push(`- Import anchor: \`${sourceAnchorText(candidate.source_anchor)}\``);
+    lines.push(`- Import text: \`${candidate.import_text}\``);
+    if (candidate.call_anchor) {
+      lines.push(`- Call anchor: \`${sourceAnchorText(candidate.call_anchor)}\``);
+    }
+    if (candidate.call_text) {
+      lines.push(`- Call text: \`${candidate.call_text}\``);
+    }
+    lines.push(`- Language: \`${candidate.language}\``);
+    if (candidate.framework) {
+      lines.push(`- Framework: \`${candidate.framework}\``);
+    }
+  }
+}
+
+function renderTemplatePatternReviewPack(output, lines) {
+  lines.push('', '## Template Patterns');
+  if (output.candidates.template_patterns.length === 0) {
+    lines.push('', '- None detected.');
+    return;
+  }
+
+  for (const candidate of output.candidates.template_patterns) {
+    lines.push('', `### ${candidate.pattern_key}`);
+    lines.push(`- Candidate: \`${candidate.candidate_id}\``);
+    lines.push(`- Pattern key: \`${candidate.pattern_key}\``);
+    lines.push(`- Name: \`${candidate.name}\``);
+    lines.push(`- Language: \`${candidate.language ?? 'mixed'}\``);
+    if (candidate.framework) {
+      lines.push(`- Framework: \`${candidate.framework}\``);
+    }
+    lines.push(`- Instance count: ${candidate.instance_count}`);
+    lines.push(`- Threshold: ${candidate.threshold}`);
+    lines.push('', '#### Representative Instances');
+    for (const instance of candidate.instances) {
+      lines.push('', `- Anchor: \`${sourceAnchorText(instance.source_anchor)}\``);
+      if (instance.module_path) {
+        lines.push(`  - Module path: \`${instance.module_path}\``);
+      }
+      const snippet = markdownSnippet(output.project.root_path, candidate.language, instance.source_anchor);
+      if (snippet) {
+        lines.push('  - Snippet:');
+        lines.push(indentMarkdown(snippet, '    '));
+      } else if (instance.snippet) {
+        lines.push(`  - Snippet: \`${truncateText(instance.snippet, MAX_REVIEW_SNIPPET_CHARS)}\``);
+      }
+    }
+  }
+}
+
+function indentMarkdown(text, prefix) {
+  return text.split('\n').map((line) => `${prefix}${line}`).join('\n');
+}
+
+function renderDiscoveryReviewPack(output) {
+  const lines = [
+    '# Discovery Review Pack',
+    '',
+    `Project: \`${output.project.project_id}\``,
+    `Root: \`${output.project.root_path}\``,
+    `Mode: \`${output.scan.mode}\``,
+    `Generated: \`${output.generated_at}\``,
+    `Files scanned: ${output.scan.files_scanned}`,
+    '',
+    '## Run Files',
+    '',
+    `- Candidates JSON: \`${output.run_files.candidates_path}\``,
+    `- Decision template: \`${output.run_files.decisions_template_path}\``,
+    '',
+  ];
+
+  // Review Pack 只呈现结构事实；标签、取舍和接受/忽略决策由 Discovery Skill agent 负责。
+  renderUtilityArtifactReviewPack(output, lines);
+  renderObservedExternalUsageReviewPack(output, lines);
+  renderTemplatePatternReviewPack(output, lines);
+
+  return `${lines.join('\n')}\n`;
+}
+
+function buildDecisionTemplate(output) {
+  const decisions = Object.fromEntries(allDiscoveryCandidates(output).map((candidate) => [
+    candidate.candidate_id,
+    {
+      action: 'review',
+      reason: '',
+    },
+  ]));
+
+  return {
+    kind: 'tool_catalog_discovery_decision_template',
+    version: 1,
+    generated_at: output.generated_at,
+    scan: output.scan,
+    run_files: output.run_files,
+    candidates: output.candidates,
+    decisions,
+  };
+}
+
+function writeDiscoveryRunFiles(context, output) {
+  const runFiles = discoveryRunFilePaths(context, output);
+  const outputWithRunFiles = {
+    ...output,
+    run_files: runFiles,
+  };
+
+  fs.mkdirSync(runFiles.run_directory, { recursive: true });
+  writeJsonRunFile(runFiles.candidates_path, outputWithRunFiles);
+  fs.writeFileSync(runFiles.review_pack_path, renderDiscoveryReviewPack(outputWithRunFiles), 'utf8');
+  writeJsonRunFile(runFiles.decisions_template_path, buildDecisionTemplate(outputWithRunFiles));
+
+  return outputWithRunFiles;
 }
 
 function renderDiscoveryMarkdown(output) {
@@ -2233,44 +2593,23 @@ function renderDiscoveryMarkdown(output) {
     `Files: ${output.scan.files_scanned} scanned from ${output.scan.files_in_scope} in-scope ${pluralize(output.scan.files_in_scope, 'file')}.`,
     `Index mutated: \`${output.index_mutated}\``,
     '',
-    '## Utility Artifacts',
+    '## Candidate Counts',
+    '',
+    `- Utility artifacts: ${output.candidates.utility_artifacts.length}`,
+    `- Observed external usages: ${output.candidates.observed_external_usages.length}`,
+    `- Template patterns: ${output.candidates.template_patterns.length}`,
+    '',
+    '## Run Files',
+    '',
+    `- Candidates JSON: \`${output.run_files.candidates_path}\``,
+    `- Discovery Review Pack: \`${output.run_files.review_pack_path}\``,
+    `- Decision template: \`${output.run_files.decisions_template_path}\``,
+    '',
+    '## Next Steps',
+    '',
+    '- Read the Discovery Review Pack first; use candidate JSON only for audit, debugging, or validation.',
+    '- Write reviewed accept, ignore, and defer decisions before running `tool-catalog discover --apply <decisions.json>`.',
   ];
-
-  if (output.candidates.utility_artifacts.length === 0) {
-    lines.push('- None detected.');
-  } else {
-    for (const candidate of output.candidates.utility_artifacts) {
-      lines.push(renderCandidateLine(candidate));
-      lines.push(`  Evidence: ${candidate.evidence.join('; ')}.`);
-      if (candidate.members.length > 0) {
-        lines.push(`  Members: ${candidate.members.map((member) => `\`${member.name}\``).join(', ')}.`);
-      }
-    }
-  }
-
-  lines.push('', '## Observed External Usages');
-  if (output.candidates.observed_external_usages.length === 0) {
-    lines.push('- None detected.');
-  } else {
-    for (const candidate of output.candidates.observed_external_usages) {
-      lines.push(renderCandidateLine(candidate));
-      lines.push(`  Import: \`${candidate.import_text}\``);
-      if (candidate.call_text) {
-        lines.push(`  Call: \`${candidate.call_text}\``);
-      }
-    }
-  }
-
-  lines.push('', '## Template Patterns');
-  if (output.candidates.template_patterns.length === 0) {
-    lines.push(`- None reached the threshold of ${TEMPLATE_MIN_INSTANCES} controlled instances.`);
-  } else {
-    for (const candidate of output.candidates.template_patterns) {
-      lines.push(`- \`${candidate.candidate_id}\` (${candidate.instance_count} instances) ${candidate.name}`);
-      lines.push(`  Evidence: ${candidate.evidence.join('; ')}.`);
-      lines.push(`  Examples: ${candidate.instances.slice(0, 3).map((instance) => `\`${instance.source_anchor.text}\``).join(', ')}.`);
-    }
-  }
 
   lines.push('', '## Scan Notes');
   lines.push('- Dry-run output is review-only and did not write SQLite project index data.');
@@ -2415,6 +2754,65 @@ function parseDecisionOverrides(decisions) {
   return overrides;
 }
 
+function collectAcceptedEntryArray(value, groupName, entries) {
+  if (!value) {
+    return;
+  }
+  if (!Array.isArray(value)) {
+    throw new ToolCatalogError(`Discovery decisions field '${groupName}' must be an array.`, 2);
+  }
+
+  const impliedType = candidateTypeForGroup(groupName);
+  for (const entry of value) {
+    if (!isPlainObject(entry)) {
+      throw new ToolCatalogError(`Accepted entry in '${groupName}' must be an object.`, 2);
+    }
+    entries.push({
+      ...entry,
+      candidate_type: entry.candidate_type ?? entry.entry_type ?? impliedType,
+    });
+  }
+}
+
+function collectFinalAcceptedEntries(input) {
+  const entries = [];
+  collectAcceptedEntryArray(input.accepted_entries, 'accepted_entries', entries);
+  collectAcceptedEntryArray(input.accepted_utility_artifacts, 'utility_artifacts', entries);
+  collectAcceptedEntryArray(input.accepted_observed_external_usages, 'observed_external_usages', entries);
+  collectAcceptedEntryArray(input.accepted_template_patterns, 'template_patterns', entries);
+
+  if (isPlainObject(input.accepted)) {
+    for (const groupName of CANDIDATE_GROUPS) {
+      collectAcceptedEntryArray(input.accepted[groupName], groupName, entries);
+    }
+  }
+
+  return entries;
+}
+
+function collectTraceableDecisionArray(value, fieldName) {
+  if (!value) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new ToolCatalogError(`Discovery decisions field '${fieldName}' must be an array.`, 2);
+  }
+
+  return value.map((item) => {
+    if (!isPlainObject(item)) {
+      throw new ToolCatalogError(`Decision entry in '${fieldName}' must be an object.`, 2);
+    }
+    return item;
+  });
+}
+
+function finalAcceptedCandidateId(entry) {
+  return normalizeNullableString(entry.candidate_id)
+    ?? normalizeNullableString(entry.artifact_key)
+    ?? normalizeNullableString(entry.pattern_key)
+    ?? normalizeNullableString(entry.usage_key);
+}
+
 function assertRelativeProjectPath(value, fieldName) {
   const rawValue = String(value ?? '');
   const normalized = normalizeRelativePath(rawValue);
@@ -2514,15 +2912,6 @@ function normalizeApplyScope(input) {
   };
 }
 
-function defaultUtilitySummary(candidate) {
-  const language = candidate.language ? `${candidate.language} ` : '';
-  return `${candidate.name} is a reusable ${language}utility artifact from ${candidate.source_anchor.path}.`;
-}
-
-function defaultMemberSummary(member, artifact) {
-  return `${member.name} is a callable ${member.member_type} on ${artifact.name}.`;
-}
-
 function normalizeOriginPriority(value, originType) {
   const defaultPriority = originType === 'external' ? 50 : 100;
   const normalizePriority = (rawValue) => {
@@ -2584,17 +2973,122 @@ function normalizeUtilityMember(rawMember, artifact) {
   }
   const memberKey = normalizeNullableString(rawMember.member_key) ?? `${artifact.artifactKey}#${name}`;
   const memberType = normalizeNullableString(rawMember.member_type) ?? 'member';
-  const sourceAnchor = normalizeSourceAnchor(rawMember.source_anchor, memberKey, `member ${memberKey} source_anchor`);
+  const signatures = normalizeUtilityMemberSignatures(rawMember, memberKey, name);
+  const sourceAnchor = signatures[0].sourceAnchor;
+  const snippet = truncateText(rawMember.snippet, MAX_SNIPPET_CHARS) ?? signatures[0].snippet;
 
   return {
     memberKey,
     name,
     memberType,
-    signature: truncateText(rawMember.signature ?? name, MAX_SUMMARY_CHARS),
+    signature: signatures[0].signature,
     sourceAnchor,
-    summary: truncateText(rawMember.summary ?? rawMember.catalog_prose ?? defaultMemberSummary({ name, member_type: memberType }, artifact), MAX_SUMMARY_CHARS),
-    snippet: truncateText(rawMember.snippet, MAX_SNIPPET_CHARS),
+    summary: normalizeRequiredText(rawMember.summary ?? rawMember.catalog_prose ?? rawMember.description, `Accepted artifact member ${memberKey} summary`),
+    usageNotes: truncateText(rawMember.usage_notes, MAX_SUMMARY_CHARS),
+    limitations: truncateText(rawMember.limitations, MAX_SUMMARY_CHARS),
+    capabilityTags: normalizeCapabilityTags(rawMember.capability_tags ?? rawMember.tags, `Accepted artifact member ${memberKey} capability_tags`),
+    snippet,
+    signatures,
   };
+}
+
+function normalizeUtilityMemberSignatures(rawMember, memberKey, memberName) {
+  const rawSignatures = Array.isArray(rawMember.signatures) && rawMember.signatures.length > 0
+    ? rawMember.signatures
+    : [{
+      signature: rawMember.signature ?? memberName,
+      source_anchor: rawMember.source_anchor,
+      snippet: rawMember.snippet,
+    }];
+  const signatures = [];
+  const seen = new Set();
+
+  rawSignatures.forEach((rawSignature, index) => {
+    const fieldPrefix = `Accepted artifact member ${memberKey} signatures[${index}]`;
+    const signatureValue = isPlainObject(rawSignature) ? rawSignature.signature : rawSignature;
+    const sourceAnchorValue = isPlainObject(rawSignature) ? rawSignature.source_anchor : rawMember.source_anchor;
+    const snippetValue = isPlainObject(rawSignature) ? rawSignature.snippet : rawMember.snippet;
+    const signature = normalizeRequiredText(signatureValue, `${fieldPrefix} signature`);
+    const sourceAnchor = normalizeSourceAnchor(sourceAnchorValue, `${memberKey}#${index + 1}`, `${fieldPrefix} source_anchor`);
+    const snippet = truncateText(snippetValue, MAX_SNIPPET_CHARS);
+    const dedupeKey = `${sourceAnchor.text}::${signature}`;
+    if (seen.has(dedupeKey)) {
+      return;
+    }
+    seen.add(dedupeKey);
+    signatures.push({
+      signature,
+      sourceAnchor,
+      snippet,
+    });
+  });
+
+  if (signatures.length === 0) {
+    throw new ToolCatalogError(`Accepted artifact member ${memberKey} must include at least one signature.`, 2);
+  }
+
+  return signatures;
+}
+
+function mergeCapabilityTagLists(existingTags, incomingTags) {
+  const byTag = new Map();
+  for (const tag of [...(existingTags ?? []), ...(incomingTags ?? [])]) {
+    if (!tag?.tag) {
+      continue;
+    }
+    const existing = byTag.get(tag.tag);
+    byTag.set(tag.tag, {
+      tag: tag.tag,
+      description: tag.description ?? existing?.description ?? null,
+    });
+  }
+  return [...byTag.values()];
+}
+
+function mergeMemberSignatures(existingSignatures, incomingSignatures) {
+  const merged = [];
+  const seen = new Set();
+
+  for (const signature of [...(existingSignatures ?? []), ...(incomingSignatures ?? [])]) {
+    if (!signature?.signature || !signature?.sourceAnchor?.text) {
+      continue;
+    }
+    const key = `${signature.sourceAnchor.text}::${signature.signature}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(signature);
+  }
+
+  return merged;
+}
+
+function aggregateUtilityMembers(rawMembers, artifact) {
+  const groupedMembers = new Map();
+
+  for (const rawMember of rawMembers) {
+    const normalized = normalizeUtilityMember(rawMember, artifact);
+    const existing = groupedMembers.get(normalized.memberKey);
+    if (!existing) {
+      groupedMembers.set(normalized.memberKey, normalized);
+      continue;
+    }
+    if (existing.name !== normalized.name || existing.memberType !== normalized.memberType) {
+      throw new ToolCatalogError(`Accepted artifact member ${normalized.memberKey} has conflicting logical member metadata.`, 2);
+    }
+
+    existing.summary = existing.summary ?? normalized.summary;
+    existing.usageNotes = existing.usageNotes ?? normalized.usageNotes;
+    existing.limitations = existing.limitations ?? normalized.limitations;
+    existing.snippet = existing.snippet ?? normalized.snippet;
+    existing.capabilityTags = mergeCapabilityTagLists(existing.capabilityTags, normalized.capabilityTags);
+    existing.signatures = mergeMemberSignatures(existing.signatures, normalized.signatures);
+    existing.signature = existing.signatures[0].signature;
+    existing.sourceAnchor = existing.signatures[0].sourceAnchor;
+  }
+
+  return [...groupedMembers.values()];
 }
 
 function normalizeUtilityArtifact(candidate) {
@@ -2613,10 +3107,13 @@ function normalizeUtilityArtifact(candidate) {
     framework: normalizeNullableString(candidate.framework),
     modulePath: normalizeNullableString(candidate.module_path),
     sourceAnchor,
-    summary: truncateText(candidate.summary ?? candidate.catalog_prose ?? candidate.description ?? defaultUtilitySummary({ ...candidate, name, source_anchor: sourceAnchor }), MAX_SUMMARY_CHARS),
+    summary: normalizeRequiredText(candidate.summary ?? candidate.catalog_prose ?? candidate.description, `Accepted utility artifact ${candidate.candidate_id} summary`),
+    usageNotes: truncateText(candidate.usage_notes, MAX_SUMMARY_CHARS),
+    limitations: truncateText(candidate.limitations, MAX_SUMMARY_CHARS),
+    capabilityTags: normalizeCapabilityTags(candidate.capability_tags ?? candidate.tags, `Accepted utility artifact ${candidate.candidate_id} capability_tags`),
     snippet: truncateText(candidate.snippet, MAX_SNIPPET_CHARS),
   };
-  const members = Array.isArray(candidate.members) ? candidate.members.map((member) => normalizeUtilityMember(member, artifact)) : [];
+  const members = Array.isArray(candidate.members) ? aggregateUtilityMembers(candidate.members, artifact) : [];
   if (members.length === 0) {
     throw new ToolCatalogError(`Accepted utility artifact ${candidate.candidate_id} must include at least one member.`, 2);
   }
@@ -2655,7 +3152,10 @@ function normalizeTemplatePattern(candidate) {
     language: normalizeNullableString(candidate.language),
     framework: normalizeNullableString(candidate.framework),
     modulePath: normalizeNullableString(candidate.module_path),
-    summary: truncateText(candidate.summary ?? candidate.catalog_prose ?? 'Repeated controlled structural pattern.', MAX_SUMMARY_CHARS),
+    summary: normalizeRequiredText(candidate.summary ?? candidate.catalog_prose ?? candidate.description, `Accepted template pattern ${candidate.candidate_id} summary`),
+    usageNotes: truncateText(candidate.usage_notes, MAX_SUMMARY_CHARS),
+    limitations: truncateText(candidate.limitations, MAX_SUMMARY_CHARS),
+    capabilityTags: normalizeCapabilityTags(candidate.capability_tags ?? candidate.tags, `Accepted template pattern ${candidate.candidate_id} capability_tags`),
     snippet: truncateText(candidate.snippet, MAX_SNIPPET_CHARS),
   };
   const instances = Array.isArray(candidate.instances) ? candidate.instances.map((instance) => normalizeTemplateInstance(instance, pattern)) : [];
@@ -2727,20 +3227,82 @@ function normalizeIgnoredCandidate(candidate) {
   };
 }
 
+function normalizeDeferredCandidate(candidate) {
+  const candidateId = normalizeNullableString(candidate.candidate_id);
+  const candidateType = normalizeNullableString(candidate.candidate_type) ?? 'unknown';
+  const sourceAnchor = normalizeSourceAnchor(firstCandidateAnchor(candidate), candidateId, `${candidateId} source_anchor`);
+
+  return {
+    candidateId,
+    candidateType,
+    artifactKey: normalizeNullableString(candidate.artifact_key ?? candidate.candidate_id),
+    patternKey: normalizeNullableString(candidate.pattern_key)
+      ?? (candidateType === 'template_pattern' ? candidateId.replace(/^template-pattern:/, '') : null),
+    usageKey: normalizeNullableString(candidate.usage_key ?? candidate.candidate_id),
+    sourceAnchor,
+    reason: truncateText(candidate.reason ?? candidate.defer_reason ?? candidate.question ?? 'Deferred by discovery apply decision.', MAX_SUMMARY_CHARS),
+  };
+}
+
+function hasSelectionDescription(value) {
+  return Object.hasOwn(value, 'summary') || Object.hasOwn(value, 'catalog_prose') || Object.hasOwn(value, 'description');
+}
+
+function mergeCandidateMembers(candidateMembers, decisionMembers) {
+  if (!Array.isArray(decisionMembers)) {
+    return candidateMembers;
+  }
+  if (!Array.isArray(candidateMembers)) {
+    return decisionMembers;
+  }
+
+  const decisionByKey = new Map();
+  for (const member of decisionMembers) {
+    const key = normalizeNullableString(member.member_key) ?? normalizeNullableString(member.name);
+    if (key) {
+      decisionByKey.set(key, member);
+    }
+  }
+
+  return candidateMembers.map((member) => {
+    const key = normalizeNullableString(member.member_key) ?? normalizeNullableString(member.name);
+    const byKey = key ? decisionByKey.get(key) : null;
+    const byName = normalizeNullableString(member.name) ? decisionByKey.get(normalizeNullableString(member.name)) : null;
+    const decision = byKey ?? byName;
+    if (!decision) {
+      return member;
+    }
+    const merged = { ...member, ...decision };
+    if (!hasSelectionDescription(decision)) {
+      delete merged.summary;
+      delete merged.catalog_prose;
+      delete merged.description;
+    }
+    return merged;
+  });
+}
+
 function mergeCandidateDecision(candidate, decision) {
   if (!decision) {
     return candidate;
   }
 
-  return {
+  const merged = {
     ...candidate,
     ...decision,
     candidate_id: candidate.candidate_id,
     candidate_type: decision.candidate_type ?? candidate.candidate_type,
     source_anchor: decision.source_anchor ?? candidate.source_anchor,
-    members: decision.members ?? candidate.members,
+    members: mergeCandidateMembers(candidate.members, decision.members),
     instances: decision.instances ?? candidate.instances,
   };
+  if (!hasSelectionDescription(decision)) {
+    delete merged.summary;
+    delete merged.catalog_prose;
+    delete merged.description;
+  }
+
+  return merged;
 }
 
 function normalizeExplicitOriginPriorities(input) {
@@ -2788,20 +3350,92 @@ function normalizeApplyDecisions(input) {
   const scope = normalizeApplyScope(input);
   const candidates = collectApplyCandidates(input);
   const overrides = parseDecisionOverrides(input.decisions);
+  const finalAcceptedEntries = collectFinalAcceptedEntries(input);
+  const ignoredDecisionEntries = collectTraceableDecisionArray(input.ignored_candidates, 'ignored_candidates');
+  const deferredDecisionEntries = collectTraceableDecisionArray(input.deferred_candidates, 'deferred_candidates');
   const normalized = {
     scope,
     acceptedUtilities: [],
     acceptedTemplates: [],
     acceptedExternalUsages: [],
     ignoredCandidates: [],
+    deferredCandidates: [],
     requiredDecisions: [],
     explicitOriginPriorities: normalizeExplicitOriginPriorities(input),
     protectedUtilityKeys: new Set(),
     protectedTemplateKeys: new Set(),
     protectedExternalUsageKeys: new Set(),
   };
+  const resolvedCandidateIds = new Set();
+
+  const protectCandidate = (candidateType, candidate) => {
+    if (candidateType === 'utility_artifact') {
+      normalized.protectedUtilityKeys.add(normalizeNullableString(candidate.artifactKey ?? candidate.artifact_key ?? candidate.candidate_id));
+    } else if (candidateType === 'template_pattern') {
+      normalized.protectedTemplateKeys.add(normalizeNullableString(candidate.patternKey ?? candidate.pattern_key) ?? normalizeNullableString(candidate.candidate_id)?.replace(/^template-pattern:/, ''));
+    } else if (candidateType === 'observed_external_usage') {
+      normalized.protectedExternalUsageKeys.add(normalizeNullableString(candidate.usageKey ?? candidate.usage_key ?? candidate.candidate_id));
+    }
+  };
+
+  for (const entry of finalAcceptedEntries) {
+    const candidateId = finalAcceptedCandidateId(entry);
+    if (!candidateId) {
+      throw new ToolCatalogError('Each accepted entry must include candidate_id, artifact_key, pattern_key, or usage_key.', 2);
+    }
+    const rawCandidate = candidates.get(candidateId);
+    const merged = rawCandidate ? mergeCandidateDecision(rawCandidate, entry) : {
+      ...entry,
+      candidate_id: candidateId,
+      candidate_type: entry.candidate_type ?? entry.entry_type,
+    };
+
+    if (merged.candidate_type === 'utility_artifact') {
+      const artifact = normalizeUtilityArtifact(merged);
+      normalized.acceptedUtilities.push(artifact);
+      normalized.protectedUtilityKeys.add(artifact.artifactKey);
+    } else if (merged.candidate_type === 'template_pattern') {
+      const pattern = normalizeTemplatePattern(merged);
+      normalized.acceptedTemplates.push(pattern);
+      normalized.protectedTemplateKeys.add(pattern.patternKey);
+    } else if (merged.candidate_type === 'observed_external_usage') {
+      const usage = normalizeObservedExternalUsage(merged);
+      normalized.acceptedExternalUsages.push(usage);
+      normalized.protectedExternalUsageKeys.add(usage.usageKey);
+    } else {
+      throw new ToolCatalogError(`Unsupported accepted entry type '${merged.candidate_type}' for ${candidateId}.`, 2);
+    }
+    resolvedCandidateIds.add(candidateId);
+  }
+
+  for (const item of ignoredDecisionEntries) {
+    const candidateId = normalizeNullableString(item.candidate_id);
+    if (!candidateId) {
+      throw new ToolCatalogError('Each ignored candidate decision must include candidate_id.', 2);
+    }
+    const merged = candidates.has(candidateId) ? mergeCandidateDecision(candidates.get(candidateId), item) : item;
+    const ignored = normalizeIgnoredCandidate(merged);
+    normalized.ignoredCandidates.push(ignored);
+    protectCandidate(ignored.candidateType, ignored);
+    resolvedCandidateIds.add(candidateId);
+  }
+
+  for (const item of deferredDecisionEntries) {
+    const candidateId = normalizeNullableString(item.candidate_id);
+    if (!candidateId) {
+      throw new ToolCatalogError('Each deferred candidate decision must include candidate_id.', 2);
+    }
+    const merged = candidates.has(candidateId) ? mergeCandidateDecision(candidates.get(candidateId), item) : item;
+    const deferred = normalizeDeferredCandidate(merged);
+    normalized.deferredCandidates.push(deferred);
+    protectCandidate(deferred.candidateType, deferred);
+    resolvedCandidateIds.add(candidateId);
+  }
 
   for (const [candidateId, candidate] of candidates.entries()) {
+    if (resolvedCandidateIds.has(candidateId)) {
+      continue;
+    }
     const decision = overrides.get(candidateId);
     const merged = mergeCandidateDecision(candidate, decision);
     const action = normalizeDecisionAction(decision?.action ?? candidate.action ?? candidate.decision);
@@ -2826,7 +3460,16 @@ function normalizeApplyDecisions(input) {
     }
 
     if (action === 'ignore') {
-      normalized.ignoredCandidates.push(normalizeIgnoredCandidate(merged));
+      const ignored = normalizeIgnoredCandidate(merged);
+      normalized.ignoredCandidates.push(ignored);
+      protectCandidate(ignored.candidateType, ignored);
+      continue;
+    }
+
+    if (action === 'defer') {
+      const deferred = normalizeDeferredCandidate(merged);
+      normalized.deferredCandidates.push(deferred);
+      protectCandidate(deferred.candidateType, deferred);
       continue;
     }
 
@@ -2834,7 +3477,7 @@ function normalizeApplyDecisions(input) {
       candidate_id: candidateId,
       candidate_type: merged.candidate_type ?? 'unknown',
       action: action ?? 'missing',
-      reason: 'Candidate was not accepted or ignored.',
+      reason: 'Candidate was not accepted, ignored, or deferred.',
     });
 
     if (merged.candidate_type === 'utility_artifact') {
@@ -2847,16 +3490,24 @@ function normalizeApplyDecisions(input) {
   }
 
   for (const [candidateId, decision] of overrides.entries()) {
-    if (candidates.has(candidateId)) {
+    if (candidates.has(candidateId) || resolvedCandidateIds.has(candidateId)) {
       continue;
     }
     const action = normalizeDecisionAction(decision.action);
     if (action === 'ignore') {
-      normalized.ignoredCandidates.push(normalizeIgnoredCandidate(decision));
+      const ignored = normalizeIgnoredCandidate(decision);
+      normalized.ignoredCandidates.push(ignored);
+      protectCandidate(ignored.candidateType, ignored);
       continue;
     }
     if (action === 'accept') {
       throw new ToolCatalogError(`Accepted decision ${candidateId} is missing its candidate payload.`, 2);
+    }
+    if (action === 'defer') {
+      const deferred = normalizeDeferredCandidate(decision);
+      normalized.deferredCandidates.push(deferred);
+      protectCandidate(deferred.candidateType, deferred);
+      continue;
     }
     normalized.requiredDecisions.push({
       candidate_id: candidateId,
@@ -2918,6 +3569,30 @@ WHERE artifacts.project_id = ${sqlString(projectId)}
   AND artifact_members.member_key = ${sqlString(memberKey)})`;
 }
 
+function resetMemberSignaturesSql(memberId, signatures) {
+  const statements = [`
+DELETE FROM member_signatures
+WHERE member_id = ${memberId};
+`];
+
+  for (const signature of signatures) {
+    statements.push(`
+INSERT INTO member_signatures (
+  member_id, signature, source_anchor, updated_at
+) VALUES (
+  ${memberId},
+  ${sqlString(signature.signature)},
+  ${sourceAnchorSql(signature.sourceAnchor)},
+  datetime('now')
+) ON CONFLICT(member_id, source_anchor) DO UPDATE SET
+  signature = excluded.signature,
+  updated_at = datetime('now');
+`);
+  }
+
+  return statements.join('\n');
+}
+
 function upsertOriginSql(projectId, origin) {
   return `
 INSERT INTO utility_origins (
@@ -2962,6 +3637,53 @@ ON CONFLICT(project_id, origin_id) DO UPDATE SET
 `;
 }
 
+function capabilityTagTexts(tags) {
+  return tags.map((tag) => tag.tag).join('\n');
+}
+
+function upsertCapabilityTagSql(projectId, tag) {
+  return `
+INSERT INTO capability_tags (
+  project_id, tag, description, updated_at
+) VALUES (
+  ${sqlString(projectId)},
+  ${sqlString(tag.tag)},
+  ${sqlString(tag.description)},
+  datetime('now')
+) ON CONFLICT(project_id, tag) DO UPDATE SET
+  description = COALESCE(excluded.description, capability_tags.description),
+  updated_at = datetime('now');
+`;
+}
+
+function resetEntryCapabilityTagsSql(projectId, entryType, entryIdSql, tags) {
+  const statements = [`
+DELETE FROM entry_capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND entry_type = ${sqlString(entryType)}
+  AND entry_id = ${entryIdSql};
+`];
+
+  for (const tag of tags) {
+    statements.push(upsertCapabilityTagSql(projectId, tag));
+    statements.push(`
+INSERT OR IGNORE INTO entry_capability_tags (
+  project_id, entry_type, entry_id, tag_id
+)
+SELECT
+  ${sqlString(projectId)},
+  ${sqlString(entryType)},
+  ${entryIdSql},
+  id
+FROM capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND tag = ${sqlString(tag.tag)};
+`);
+  }
+
+  return statements.join('\n');
+}
+
 function upsertArtifactSql(projectId, artifact) {
   const artifactId = artifactIdSql(projectId, artifact.artifactKey);
   const memberKeys = sqlStringList(artifact.members.map((member) => member.memberKey));
@@ -2971,7 +3693,7 @@ function upsertArtifactSql(projectId, artifact) {
     upsertOriginPrioritySql(projectId, artifact.origin),
     `
 INSERT INTO artifacts (
-  project_id, origin_id, artifact_key, artifact_type, name, language, framework, module_path, source_anchor, summary, snippet, updated_at
+  project_id, origin_id, artifact_key, artifact_type, name, language, framework, module_path, source_anchor, summary, usage_notes, limitations, snippet, updated_at
 ) VALUES (
   ${sqlString(projectId)},
   (SELECT id FROM utility_origins WHERE project_id = ${sqlString(projectId)} AND origin_key = ${sqlString(artifact.origin.originKey)}),
@@ -2983,6 +3705,8 @@ INSERT INTO artifacts (
   ${sqlString(artifact.modulePath)},
   ${sourceAnchorSql(artifact.sourceAnchor)},
   ${sqlString(artifact.summary)},
+  ${sqlString(artifact.usageNotes)},
+  ${sqlString(artifact.limitations)},
   ${sqlString(artifact.snippet)},
   datetime('now')
 ) ON CONFLICT(project_id, artifact_key) DO UPDATE SET
@@ -2994,13 +3718,26 @@ INSERT INTO artifacts (
   module_path = excluded.module_path,
   source_anchor = excluded.source_anchor,
   summary = excluded.summary,
+  usage_notes = excluded.usage_notes,
+  limitations = excluded.limitations,
   snippet = excluded.snippet,
   updated_at = datetime('now');
 `,
+    resetEntryCapabilityTagsSql(projectId, 'artifact', artifactId, artifact.capabilityTags),
     `
 DELETE FROM fts_entries
 WHERE project_id = ${sqlString(projectId)}
   AND artifact_id = ${artifactId};
+`,
+    `
+DELETE FROM entry_capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND entry_type = 'member'
+  AND entry_id IN (
+    SELECT id FROM artifact_members
+    WHERE artifact_id = ${artifactId}
+      ${deleteMemberFilter}
+  );
 `,
     `
 DELETE FROM artifact_members
@@ -3013,8 +3750,13 @@ WHERE artifact_id = ${artifactId}
     const memberId = memberIdSql(projectId, artifact.artifactKey, member.memberKey);
     const body = [
       artifact.summary,
+      artifact.usageNotes,
+      artifact.limitations,
+      capabilityTagTexts(member.capabilityTags),
       member.summary,
-      member.signature,
+      member.usageNotes,
+      member.limitations,
+      ...member.signatures.map((signature) => signature.signature),
       artifact.language,
       artifact.framework,
       artifact.modulePath,
@@ -3022,7 +3764,7 @@ WHERE artifact_id = ${artifactId}
     ].filter(Boolean).join('\n');
     statements.push(`
 INSERT INTO artifact_members (
-  artifact_id, member_key, name, member_type, signature, source_anchor, summary, snippet, updated_at
+  artifact_id, member_key, name, member_type, signature, source_anchor, summary, usage_notes, limitations, snippet, updated_at
 ) VALUES (
   ${artifactId},
   ${sqlString(member.memberKey)},
@@ -3031,6 +3773,8 @@ INSERT INTO artifact_members (
   ${sqlString(member.signature)},
   ${sourceAnchorSql(member.sourceAnchor)},
   ${sqlString(member.summary)},
+  ${sqlString(member.usageNotes)},
+  ${sqlString(member.limitations)},
   ${sqlString(member.snippet)},
   datetime('now')
 ) ON CONFLICT(artifact_id, member_key) DO UPDATE SET
@@ -3039,9 +3783,13 @@ INSERT INTO artifact_members (
   signature = excluded.signature,
   source_anchor = excluded.source_anchor,
   summary = excluded.summary,
+  usage_notes = excluded.usage_notes,
+  limitations = excluded.limitations,
   snippet = excluded.snippet,
   updated_at = datetime('now');
 `);
+    statements.push(resetMemberSignaturesSql(memberId, member.signatures));
+    statements.push(resetEntryCapabilityTagsSql(projectId, 'member', memberId, member.capabilityTags));
     statements.push(`
 INSERT INTO fts_entries (
   project_id, entry_type, artifact_id, member_id, title, body, source_anchor
@@ -3059,11 +3807,14 @@ INSERT INTO fts_entries (
 
   const artifactBody = [
     artifact.summary,
+    artifact.usageNotes,
+    artifact.limitations,
+    capabilityTagTexts(artifact.capabilityTags),
     artifact.language,
     artifact.framework,
     artifact.modulePath,
     artifact.origin.displayName,
-    artifact.members.map((member) => `${member.name} ${member.signature ?? ''}`).join('\n'),
+    artifact.members.map((member) => `${member.name} ${member.signatures.map((signature) => signature.signature).join(' | ')}`).join('\n'),
   ].filter(Boolean).join('\n');
   statements.push(`
 INSERT INTO fts_entries (
@@ -3088,7 +3839,7 @@ function upsertTemplateSql(projectId, pattern) {
   const statements = [
     `
 INSERT INTO template_patterns (
-  project_id, pattern_key, name, language, framework, module_path, summary, snippet, updated_at
+  project_id, pattern_key, name, language, framework, module_path, summary, usage_notes, limitations, snippet, updated_at
 ) VALUES (
   ${sqlString(projectId)},
   ${sqlString(pattern.patternKey)},
@@ -3097,6 +3848,8 @@ INSERT INTO template_patterns (
   ${sqlString(pattern.framework)},
   ${sqlString(pattern.modulePath)},
   ${sqlString(pattern.summary)},
+  ${sqlString(pattern.usageNotes)},
+  ${sqlString(pattern.limitations)},
   ${sqlString(pattern.snippet)},
   datetime('now')
 ) ON CONFLICT(project_id, pattern_key) DO UPDATE SET
@@ -3105,9 +3858,12 @@ INSERT INTO template_patterns (
   framework = excluded.framework,
   module_path = excluded.module_path,
   summary = excluded.summary,
+  usage_notes = excluded.usage_notes,
+  limitations = excluded.limitations,
   snippet = excluded.snippet,
   updated_at = datetime('now');
 `,
+    resetEntryCapabilityTagsSql(projectId, 'template_pattern', patternId, pattern.capabilityTags),
     `
 DELETE FROM fts_entries
 WHERE project_id = ${sqlString(projectId)}
@@ -3140,6 +3896,9 @@ INSERT INTO template_instances (
 
   const body = [
     pattern.summary,
+    pattern.usageNotes,
+    pattern.limitations,
+    capabilityTagTexts(pattern.capabilityTags),
     pattern.language,
     pattern.framework,
     pattern.modulePath,
@@ -3217,10 +3976,78 @@ INSERT INTO ignored_candidates (
 `;
 }
 
+function deferredCandidateSql(projectId, candidate) {
+  return `
+INSERT INTO deferred_candidates (
+  project_id, candidate_key, candidate_type, source_anchor, reason, updated_at
+) VALUES (
+  ${sqlString(projectId)},
+  ${sqlString(candidate.candidateId)},
+  ${sqlString(candidate.candidateType)},
+  ${sourceAnchorSql(candidate.sourceAnchor)},
+  ${sqlString(candidate.reason)},
+  datetime('now')
+) ON CONFLICT(project_id, candidate_key) DO UPDATE SET
+  candidate_type = excluded.candidate_type,
+  source_anchor = excluded.source_anchor,
+  reason = excluded.reason,
+  updated_at = datetime('now');
+`;
+}
+
+function cleanupDecisionTraceSql(projectId, decisions) {
+  if (decisions.requiredDecisions.length > 0) {
+    return '';
+  }
+
+  const traceScope = pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope);
+  if (decisions.scope.mode === 'full') {
+    return `
+DELETE FROM ignored_candidates
+WHERE project_id = ${sqlString(projectId)};
+DELETE FROM deferred_candidates
+WHERE project_id = ${sqlString(projectId)};
+`;
+  }
+
+  return `
+DELETE FROM ignored_candidates
+WHERE project_id = ${sqlString(projectId)}
+  AND ${traceScope};
+DELETE FROM deferred_candidates
+WHERE project_id = ${sqlString(projectId)}
+  AND ${traceScope};
+`;
+}
+
+function deleteArtifactCapabilityTagsSql(projectId, artifactId) {
+  return `
+DELETE FROM entry_capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND (
+    (entry_type = 'artifact' AND entry_id = ${artifactId})
+    OR (entry_type = 'member' AND entry_id IN (
+      SELECT id FROM artifact_members
+      WHERE artifact_id = ${artifactId}
+    ))
+  );
+`;
+}
+
+function deleteTemplateCapabilityTagsSql(projectId, patternId) {
+  return `
+DELETE FROM entry_capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND entry_type = 'template_pattern'
+  AND entry_id = ${patternId};
+`;
+}
+
 function deleteIgnoredCatalogEntrySql(projectId, candidate) {
   if (candidate.candidateType === 'utility_artifact') {
     const artifactId = artifactIdSql(projectId, candidate.artifactKey);
     return `
+${deleteArtifactCapabilityTagsSql(projectId, artifactId)}
 DELETE FROM fts_entries
 WHERE project_id = ${sqlString(projectId)}
   AND artifact_id = ${artifactId};
@@ -3232,6 +4059,7 @@ WHERE project_id = ${sqlString(projectId)}
   if (candidate.candidateType === 'template_pattern') {
     const patternId = patternIdSql(projectId, candidate.patternKey);
     return `
+${deleteTemplateCapabilityTagsSql(projectId, patternId)}
 DELETE FROM fts_entries
 WHERE project_id = ${sqlString(projectId)}
   AND pattern_id = ${patternId};
@@ -3257,6 +4085,7 @@ function cleanupCatalogSql(projectId, decisions) {
   }
 
   const artifactScope = pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope);
+  const artifactScopeOnArtifacts = pathScopeCondition(sourceAnchorPathSql('artifacts.source_anchor'), decisions.scope);
   const externalScope = pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope);
   const instanceScope = pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope);
   const instanceAnchorText = sourceAnchorTextSql('template_instances.source_anchor');
@@ -3272,6 +4101,22 @@ function cleanupCatalogSql(projectId, decisions) {
 
   if (decisions.scope.mode === 'full') {
     return `
+DELETE FROM entry_capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND (
+    (entry_type = 'artifact' AND entry_id IN (
+      SELECT id FROM artifacts
+      WHERE project_id = ${sqlString(projectId)}
+        ${artifactKeep}
+    ))
+    OR (entry_type = 'member' AND entry_id IN (
+      SELECT artifact_members.id
+      FROM artifact_members
+      JOIN artifacts ON artifacts.id = artifact_members.artifact_id
+      WHERE artifacts.project_id = ${sqlString(projectId)}
+        ${artifactKeep}
+    ))
+  );
 DELETE FROM fts_entries
 WHERE project_id = ${sqlString(projectId)}
   AND artifact_id IN (
@@ -3282,6 +4127,14 @@ WHERE project_id = ${sqlString(projectId)}
 DELETE FROM artifacts
 WHERE project_id = ${sqlString(projectId)}
   ${artifactKeep};
+DELETE FROM entry_capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND entry_type = 'template_pattern'
+  AND entry_id IN (
+    SELECT id FROM template_patterns
+    WHERE project_id = ${sqlString(projectId)}
+      ${templateKeep}
+  );
 DELETE FROM fts_entries
 WHERE project_id = ${sqlString(projectId)}
   AND entry_type = 'template_pattern'
@@ -3300,6 +4153,24 @@ WHERE project_id = ${sqlString(projectId)}
   }
 
   return `
+DELETE FROM entry_capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND (
+    (entry_type = 'artifact' AND entry_id IN (
+      SELECT id FROM artifacts
+      WHERE project_id = ${sqlString(projectId)}
+        AND ${artifactScope}
+        ${artifactKeep}
+    ))
+    OR (entry_type = 'member' AND entry_id IN (
+      SELECT artifact_members.id
+      FROM artifact_members
+      JOIN artifacts ON artifacts.id = artifact_members.artifact_id
+      WHERE artifacts.project_id = ${sqlString(projectId)}
+        AND ${artifactScopeOnArtifacts}
+        ${artifactKeep}
+    ))
+  );
 DELETE FROM fts_entries
 WHERE project_id = ${sqlString(projectId)}
   AND artifact_id IN (
@@ -3386,6 +4257,18 @@ WHERE project_id = ${sqlString(projectId)}
       )
       ${templateKeep}
   );
+DELETE FROM entry_capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND entry_type = 'template_pattern'
+  AND entry_id IN (
+    SELECT id FROM template_patterns
+    WHERE project_id = ${sqlString(projectId)}
+      AND NOT EXISTS (
+        SELECT 1 FROM template_instances
+        WHERE template_instances.pattern_id = template_patterns.id
+      )
+      ${templateKeep}
+  );
 DELETE FROM template_patterns
 WHERE project_id = ${sqlString(projectId)}
   AND NOT EXISTS (
@@ -3404,6 +4287,8 @@ WHERE project_id = ${sqlString(projectId)}
 function buildDiscoveryApplySql(context, decisions) {
   const statements = [];
 
+  statements.push(cleanupDecisionTraceSql(context.projectId, decisions));
+
   for (const artifact of decisions.acceptedUtilities) {
     statements.push(upsertArtifactSql(context.projectId, artifact));
   }
@@ -3420,6 +4305,9 @@ function buildDiscoveryApplySql(context, decisions) {
     statements.push(deleteIgnoredCatalogEntrySql(context.projectId, ignored));
     statements.push(ignoredCandidateSql(context.projectId, ignored));
   }
+  for (const deferred of decisions.deferredCandidates) {
+    statements.push(deferredCandidateSql(context.projectId, deferred));
+  }
   statements.push(cleanupCatalogSql(context.projectId, decisions));
 
   return statements.filter((statement) => statement.trim()).join('\n');
@@ -3434,12 +4322,19 @@ SELECT
   (SELECT COUNT(*) FROM artifact_members
     JOIN artifacts ON artifacts.id = artifact_members.artifact_id
     WHERE artifacts.project_id = ${sqlString(context.projectId)}) AS artifact_members,
+  (SELECT COUNT(*) FROM member_signatures
+    JOIN artifact_members ON artifact_members.id = member_signatures.member_id
+    JOIN artifacts ON artifacts.id = artifact_members.artifact_id
+    WHERE artifacts.project_id = ${sqlString(context.projectId)}) AS member_signatures,
+  (SELECT COUNT(*) FROM capability_tags WHERE project_id = ${sqlString(context.projectId)}) AS capability_tags,
+  (SELECT COUNT(*) FROM entry_capability_tags WHERE project_id = ${sqlString(context.projectId)}) AS entry_capability_tags,
   (SELECT COUNT(*) FROM template_patterns WHERE project_id = ${sqlString(context.projectId)}) AS template_patterns,
   (SELECT COUNT(*) FROM template_instances
     JOIN template_patterns ON template_patterns.id = template_instances.pattern_id
     WHERE template_patterns.project_id = ${sqlString(context.projectId)}) AS template_instances,
   (SELECT COUNT(*) FROM observed_external_usages WHERE project_id = ${sqlString(context.projectId)}) AS observed_external_usages,
   (SELECT COUNT(*) FROM ignored_candidates WHERE project_id = ${sqlString(context.projectId)}) AS ignored_candidates,
+  (SELECT COUNT(*) FROM deferred_candidates WHERE project_id = ${sqlString(context.projectId)}) AS deferred_candidates,
   (SELECT COUNT(*) FROM fts_entries WHERE project_id = ${sqlString(context.projectId)}) AS fts_entries;
 `);
 
@@ -3451,7 +4346,7 @@ function emptyCatalogCounts() {
 }
 
 function getCatalogCountsIfPresent(context) {
-  if (!fs.existsSync(context.dbPath) || getSchemaVersion(context.dbPath) < 1) {
+  if (!fs.existsSync(context.dbPath) || getSchemaVersion(context.dbPath) < MIN_CONSULT_SCHEMA_VERSION) {
     return emptyCatalogCounts();
   }
 
@@ -3511,6 +4406,7 @@ function buildApplySummary(context, decisions, beforeCounts, afterCounts, indexM
       accepted_template_instances: decisions.acceptedTemplates.reduce((count, pattern) => count + pattern.instances.length, 0),
       accepted_observed_external_usages: decisions.acceptedExternalUsages.length,
       ignored_candidates: decisions.ignoredCandidates.length,
+      deferred_candidates: decisions.deferredCandidates.length,
       required_decisions: decisions.requiredDecisions,
       explicit_origin_priorities: decisions.explicitOriginPriorities.length,
     },
@@ -3562,6 +4458,7 @@ function renderDiscoveryApplyMarkdown(summary) {
     `- Template instances: ${summary.decisions.accepted_template_instances}`,
     `- Observed external usages: ${summary.decisions.accepted_observed_external_usages}`,
     `- Ignored candidates: ${summary.decisions.ignored_candidates}`,
+    `- Deferred candidates: ${summary.decisions.deferred_candidates}`,
     `- Origin priorities: ${summary.decisions.explicit_origin_priorities}`,
     '',
     '## Required Decisions',
@@ -3653,8 +4550,8 @@ function consultIndexState(context) {
   return {
     exists,
     schemaVersion,
-    readable: exists && schemaVersion >= 2,
-    reason: exists ? (schemaVersion >= 2 ? null : 'schema-too-old') : 'missing-index',
+    readable: exists && schemaVersion >= MIN_CONSULT_SCHEMA_VERSION,
+    reason: exists ? (schemaVersion >= MIN_CONSULT_SCHEMA_VERSION ? null : 'schema-too-old') : 'missing-index',
   };
 }
 
@@ -3675,6 +4572,105 @@ function buildUnavailableIndexOutput(kind, context, state) {
         : 'The project index schema is too old for consulting commands. Run discovery apply to migrate it.',
     ],
   };
+}
+
+function buildUnavailableTagsOutput(context, state) {
+  const output = buildUnavailableIndexOutput('tool_catalog_tags', context, state);
+  return {
+    ...output,
+    generated_at: new Date().toISOString(),
+    index_mutated: false,
+    tags: [],
+    results: undefined,
+  };
+}
+
+function capabilityTagVocabularyEntry(tag) {
+  return CAPABILITY_TAG_VOCABULARY.get(tag) ?? null;
+}
+
+function loadCapabilityTagVocabulary(context) {
+  return runSqliteReadOnlyJson(context.dbPath, `
+SELECT
+  capability_tags.tag,
+  capability_tags.description,
+  COUNT(DISTINCT entry_capability_tags.entry_type || ':' || entry_capability_tags.entry_id) AS entry_count
+FROM capability_tags
+LEFT JOIN entry_capability_tags
+  ON entry_capability_tags.project_id = capability_tags.project_id
+  AND entry_capability_tags.tag_id = capability_tags.id
+WHERE capability_tags.project_id = ${sqlString(context.projectId)}
+GROUP BY capability_tags.id, capability_tags.tag, capability_tags.description
+ORDER BY capability_tags.tag;
+`).map((row) => {
+    const vocabulary = capabilityTagVocabularyEntry(row.tag);
+    return {
+      tag: row.tag,
+      description: normalizeNullableString(row.description)
+        ?? vocabulary?.description
+        ?? 'Capability tag stored without a project-specific description.',
+      aliases: [...(vocabulary?.aliases ?? [])],
+      entry_count: Number(row.entry_count ?? 0),
+    };
+  });
+}
+
+function buildTagsOutput(context, state) {
+  if (!state.readable) {
+    return buildUnavailableTagsOutput(context, state);
+  }
+
+  return {
+    kind: 'tool_catalog_tags',
+    version: 1,
+    generated_at: new Date().toISOString(),
+    index_mutated: false,
+    project: projectContextToOutput(context),
+    tags: loadCapabilityTagVocabulary(context),
+    warnings: [],
+  };
+}
+
+function renderTagsMarkdown(output) {
+  const lines = [
+    '# Tool Catalog tags',
+    '',
+    `Project: \`${output.project.project_id}\``,
+    `Root: \`${output.project.root_path}\``,
+    `Index mutated: \`${output.index_mutated ?? false}\``,
+    '',
+    '## Tags',
+  ];
+
+  if (output.tags.length === 0) {
+    lines.push('- None.');
+  } else {
+    for (const entry of output.tags) {
+      lines.push(`- \`${entry.tag}\` (${entry.entry_count} entries)`);
+      lines.push(`  Description: ${entry.description}`);
+      if (entry.aliases.length > 0) {
+        lines.push(`  Aliases: ${entry.aliases.map((alias) => `\`${alias}\``).join(', ')}`);
+      }
+    }
+  }
+
+  if (output.warnings.length > 0) {
+    lines.push('', '## Notes');
+    for (const warning of output.warnings) {
+      lines.push(`- ${warning}`);
+    }
+  }
+
+  return `${lines.join('\n')}\n`;
+}
+
+function printTagsOutput(output, options) {
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    return;
+  }
+
+  process.stdout.write(renderTagsMarkdown(output));
 }
 
 function sqlLimit(value) {
@@ -3791,6 +4787,37 @@ function lowerSet(values) {
   return new Set(values.map((value) => String(value).toLowerCase()));
 }
 
+function entryHasAllTagsSql(projectId, entryType, entryIdSql, tags) {
+  if (tags.length === 0) {
+    return '1 = 1';
+  }
+
+  return tags.map((tag) => `
+EXISTS (
+  SELECT 1
+  FROM entry_capability_tags
+  JOIN capability_tags ON capability_tags.id = entry_capability_tags.tag_id
+  WHERE entry_capability_tags.project_id = ${sqlString(projectId)}
+    AND entry_capability_tags.entry_type = ${sqlString(entryType)}
+    AND entry_capability_tags.entry_id = ${entryIdSql}
+    AND capability_tags.project_id = entry_capability_tags.project_id
+    AND capability_tags.tag = ${sqlString(tag)}
+)`).join(' AND ');
+}
+
+function queryTagFilterSql(projectId, tags) {
+  if (tags.length === 0) {
+    return '';
+  }
+
+  return `
+  AND (
+    (fts_entries.entry_type = 'artifact' AND ${entryHasAllTagsSql(projectId, 'artifact', 'artifacts.id', tags)})
+    OR (fts_entries.entry_type = 'member' AND ${entryHasAllTagsSql(projectId, 'member', 'artifact_members.id', tags)})
+    OR (fts_entries.entry_type = 'template_pattern' AND ${entryHasAllTagsSql(projectId, 'template_pattern', 'template_patterns.id', tags)})
+  )`;
+}
+
 function resultTypeAliases(result) {
   const aliases = new Set([result.kind]);
   if (result.kind === 'artifact') {
@@ -3828,6 +4855,114 @@ function passesQueryFilters(result, queryOptions) {
   }
 
   return true;
+}
+
+function compactQueryMatch(result) {
+  return {
+    kind: result.kind,
+    selector: result.selector,
+    title: result.title,
+    signature: result.signature,
+    signatures: result.signatures,
+    source_anchor: result.source_anchor,
+    summary: result.summary,
+    snippet: result.snippet,
+  };
+}
+
+function createArtifactQueryGroup(result) {
+  return {
+    kind: 'artifact',
+    selector: `artifact:${result.artifact_key}`,
+    identifier: result.artifact_key,
+    title: result.artifact_name ?? result.title,
+    artifact_type: result.artifact_type,
+    language: result.language,
+    framework: result.framework,
+    module_path: result.module_path,
+    source_anchor: result.artifact_source_anchor ?? result.source_anchor,
+    summary: result.artifact_summary ?? result.summary,
+    origin_type: result.origin_type,
+    origin_key: result.origin_key,
+    origin_display_name: result.origin_display_name,
+    origin_priority: result.origin_priority,
+    origin_priority_reason: result.origin_priority_reason,
+    matched_by: result.kind,
+    best_match: compactQueryMatch(result),
+    matching_members: [],
+    member_match_count: 0,
+  };
+}
+
+function addArtifactQueryMatch(group, result) {
+  if (result.kind !== 'member') {
+    return;
+  }
+  if (group.matching_members.some((member) => member.selector === result.selector)) {
+    return;
+  }
+
+  group.matching_members.push({
+    selector: result.selector,
+    identifier: result.identifier,
+    title: result.title,
+    name: result.member_name,
+    member_type: result.member_type,
+    signature: result.signature,
+    signatures: result.signatures,
+    source_anchor: result.source_anchor,
+    summary: result.summary,
+    snippet: result.snippet,
+  });
+  group.member_match_count = group.matching_members.length;
+}
+
+function buildGroupedQueryResults(results, limit) {
+  const grouped = [];
+  const artifactGroups = new Map();
+
+  for (const result of results) {
+    if (result.kind === 'artifact' || result.kind === 'member') {
+      const selector = `artifact:${result.artifact_key}`;
+      let group = artifactGroups.get(selector);
+      if (!group) {
+        group = createArtifactQueryGroup(result);
+        artifactGroups.set(selector, group);
+        grouped.push(group);
+      }
+      addArtifactQueryMatch(group, result);
+      continue;
+    }
+
+    grouped.push({
+      kind: result.kind,
+      selector: result.selector,
+      identifier: result.identifier,
+      title: result.title,
+      artifact_type: result.artifact_type,
+      member_type: result.member_type,
+      language: result.language,
+      framework: result.framework,
+      module_path: result.module_path,
+      source_anchor: result.source_anchor,
+      summary: result.summary,
+      signature: result.signature,
+      signatures: result.signatures,
+      snippet: result.snippet,
+      origin_type: result.origin_type,
+      origin_key: result.origin_key,
+      origin_display_name: result.origin_display_name,
+      origin_priority: result.origin_priority,
+      origin_priority_reason: result.origin_priority_reason,
+    });
+  }
+
+  return grouped
+    .slice(0, limit)
+    .map((result, index) => ({
+      rank: index + 1,
+      ...result,
+    }));
 }
 
 function textIncludesTerm(value, term) {
@@ -3904,6 +5039,7 @@ function mapFtsRow(row) {
   const isMember = kind === 'member';
   const isTemplate = kind === 'template_pattern';
   const anchor = parseStoredSourceAnchor(isMember ? row.member_source_anchor : (isTemplate ? row.template_source_anchor : row.artifact_source_anchor));
+  const artifactAnchor = parseStoredSourceAnchor(row.artifact_source_anchor);
   const identifier = isMember ? row.member_key : (isTemplate ? row.pattern_key : row.artifact_key);
   const title = isMember ? `${row.artifact_name}.${row.member_name}` : (isTemplate ? row.pattern_name : row.artifact_name);
 
@@ -3915,8 +5051,12 @@ function mapFtsRow(row) {
     member_id: row.member_id,
     pattern_id: row.pattern_id,
     artifact_key: row.artifact_key,
+    artifact_name: row.artifact_name,
     artifact_type: row.artifact_type,
+    artifact_source_anchor: anchorToOutput(artifactAnchor),
+    artifact_summary: row.artifact_summary,
     member_type: row.member_type,
+    member_name: row.member_name,
     language: isTemplate ? row.template_language : row.artifact_language,
     framework: isTemplate ? row.template_framework : row.artifact_framework,
     module_path: isTemplate ? row.template_module_path : row.artifact_module_path,
@@ -3936,7 +5076,7 @@ function mapFtsRow(row) {
 }
 
 function queryFtsRows(context, ftsQuery, queryOptions) {
-  const rowLimit = Math.max(queryOptions.limit * 8, 100);
+  const rowLimit = Math.max(queryOptions.limit * 12, 120);
   return runSqliteReadOnlyJson(context.dbPath, `
 SELECT
   fts_entries.entry_type,
@@ -3983,6 +5123,7 @@ LEFT JOIN origin_priorities ON origin_priorities.project_id = artifacts.project_
   AND origin_priorities.origin_id = utility_origins.id
 WHERE fts_entries.project_id = ${sqlString(context.projectId)}
   AND fts_entries MATCH ${sqlString(ftsQuery)}
+  ${queryTagFilterSql(context.projectId, queryOptions.tags)}
 ORDER BY fts_rank ASC
 LIMIT ${sqlLimit(rowLimit)};
 `).map(mapFtsRow);
@@ -4032,6 +5173,10 @@ function mapExternalUsageRow(row) {
 }
 
 function queryExternalUsageRows(context, terms, queryOptions) {
+  if (queryOptions.tags.length > 0) {
+    return [];
+  }
+
   const rowLimit = Math.max(queryOptions.limit * 8, 100);
   return runSqliteReadOnlyJson(context.dbPath, `
 SELECT
@@ -4084,6 +5229,17 @@ function rankQueryResults(results, terms, currentFile) {
     });
 }
 
+function hydrateQueryResult(context, result) {
+  if (result.kind !== 'member' || !result.member_id) {
+    return result;
+  }
+
+  return {
+    ...result,
+    ...memberSignatureFields(loadMemberSignatures(context, result.member_id)),
+  };
+}
+
 function buildQueryOutput(context, state, queryOptions) {
   if (!state.readable) {
     return buildUnavailableIndexOutput('tool_catalog_query', context, state);
@@ -4100,24 +5256,30 @@ function buildQueryOutput(context, state, queryOptions) {
   const rankedResults = rankQueryResults([...ftsResults, ...externalResults], terms, currentFile)
     .filter((result) => result.functional_score > 0)
     .filter((result) => passesQueryFilters(result, queryOptions))
-    .slice(0, queryOptions.limit);
+    .map((result) => hydrateQueryResult(context, result));
+  const groupedResults = buildGroupedQueryResults(rankedResults, queryOptions.limit);
   const warnings = [];
 
   if (rankedResults.some((result) => result.origin_type === 'external' && !result.origin_priority_reason)) {
     warnings.push('One or more external results have no configured priority reason; verify the origin before reuse.');
   }
-  if (rankedResults.length === 0) {
-    warnings.push('No reusable catalog entries matched the query and filters. Broaden the goal or run discovery if this index is incomplete.');
+  if (groupedResults.length === 0) {
+    if (queryOptions.tags.length > 0) {
+      warnings.push('No reusable catalog entries matched the exact tag filters. Inspect `tool-catalog tags` to remap once to a better canonical tag, or retry once without --tag.');
+    } else {
+      warnings.push('No reusable catalog entries matched the query and filters. Broaden the goal or run discovery if this index is incomplete.');
+    }
   }
 
   return {
     kind: 'tool_catalog_query',
-    version: 1,
+    version: 2,
     generated_at: new Date().toISOString(),
     index_mutated: false,
     project: projectContextToOutput(context),
     query: {
       goal: queryOptions.goal,
+      tag_filters: queryOptions.tags,
       current_file: currentFile,
       language_filters: queryOptions.languages,
       framework_filters: queryOptions.frameworks,
@@ -4126,11 +5288,7 @@ function buildQueryOutput(context, state, queryOptions) {
       terms,
       ranking: ['functional_match', 'project_owned_origin', 'external_origin_priority', 'weak_module_proximity'],
     },
-    results: rankedResults.map((result, index) => ({
-      rank: index + 1,
-      ...result,
-      body: undefined,
-    })),
+    results: groupedResults,
     warnings,
   };
 }
@@ -4157,10 +5315,27 @@ function renderQueryMarkdown(output) {
       if (result.summary) {
         lines.push(`   Use: ${result.summary}`);
       }
-      if (result.signature) {
+      if (result.best_match && result.best_match.selector !== result.selector) {
+        lines.push(`   Best match: \`${result.best_match.selector}\` at \`${result.best_match.source_anchor?.text ?? 'n/a'}\`.`);
+      }
+      if ((result.signatures?.length ?? 0) > 1) {
+        lines.push(`   Signatures: ${result.signatures.map((signature) => `\`${signature.signature}\``).join('; ')}`);
+      } else if (result.signature) {
         lines.push(`   Example: \`${result.signature}\``);
       } else if (result.snippet) {
         lines.push(`   Example: \`${result.snippet}\``);
+      }
+      if (result.matching_members?.length > 0) {
+        lines.push('   Matching members:');
+        for (const member of result.matching_members) {
+          if ((member.signatures?.length ?? 0) > 1) {
+            lines.push(`   - \`${member.selector}\` Signatures: ${member.signatures.map((signature) => `\`${signature.signature}\``).join('; ')} at \`${member.source_anchor?.text ?? 'n/a'}\``);
+          } else if (member.signature) {
+            lines.push(`   - \`${member.selector}\` \`${member.signature}\` at \`${member.source_anchor?.text ?? 'n/a'}\``);
+          } else {
+            lines.push(`   - \`${member.selector}\` at \`${member.source_anchor?.text ?? 'n/a'}\``);
+          }
+        }
       }
     }
   }
@@ -4231,6 +5406,8 @@ SELECT
   artifacts.module_path,
   artifacts.source_anchor,
   artifacts.summary,
+  artifacts.usage_notes,
+  artifacts.limitations,
   artifacts.snippet,
   utility_origins.origin_key,
   utility_origins.origin_type,
@@ -4262,6 +5439,8 @@ SELECT
   artifact_members.signature,
   artifact_members.source_anchor,
   artifact_members.summary,
+  artifact_members.usage_notes,
+  artifact_members.limitations,
   artifact_members.snippet,
   artifacts.id AS artifact_id,
   artifacts.artifact_key,
@@ -4300,6 +5479,8 @@ SELECT
   template_patterns.framework,
   template_patterns.module_path,
   template_patterns.summary,
+  template_patterns.usage_notes,
+  template_patterns.limitations,
   template_patterns.snippet,
   COUNT(template_instances.id) AS instance_count
 FROM template_patterns
@@ -4343,16 +5524,35 @@ WHERE observed_external_usages.project_id = ${sqlString(context.projectId)}
 function loadArtifactMembers(context, artifactId) {
   return runSqliteReadOnlyJson(context.dbPath, `
 SELECT
+  id,
   member_key,
   name,
   member_type,
   signature,
   source_anchor,
   summary,
+  usage_notes,
+  limitations,
   snippet
 FROM artifact_members
 WHERE artifact_id = ${sqlInteger(artifactId)}
 ORDER BY name;
+`);
+}
+
+function loadMemberSignatures(context, memberId) {
+  return runSqliteReadOnlyJson(context.dbPath, `
+SELECT
+  signature,
+  source_anchor
+FROM member_signatures
+WHERE member_id = ${sqlInteger(memberId)}
+ORDER BY
+  CASE
+    WHEN json_valid(source_anchor) THEN CAST(json_extract(source_anchor, '$.line') AS INTEGER)
+    ELSE 1
+  END,
+  signature;
 `);
 }
 
@@ -4369,15 +5569,39 @@ LIMIT 20;
 `);
 }
 
+function loadEntryCapabilityTags(context, entryType, entryId) {
+  return runSqliteReadOnlyJson(context.dbPath, `
+SELECT
+  capability_tags.tag,
+  capability_tags.description
+FROM entry_capability_tags
+JOIN capability_tags ON capability_tags.id = entry_capability_tags.tag_id
+WHERE entry_capability_tags.project_id = ${sqlString(context.projectId)}
+  AND entry_capability_tags.entry_type = ${sqlString(entryType)}
+  AND entry_capability_tags.entry_id = ${sqlInteger(entryId)}
+ORDER BY capability_tags.tag;
+`);
+}
+
+function signatureEntryToOutput(signature) {
+  return {
+    signature: signature.signature,
+    source_anchor: anchorToOutput(parseStoredSourceAnchor(signature.source_anchor)),
+  };
+}
+
 function artifactEntryFromRow(context, row) {
   const members = loadArtifactMembers(context, row.artifact_id).map((member) => ({
+    ...memberSignatureFields(loadMemberSignatures(context, member.id)),
     kind: 'member',
     identifier: member.member_key,
     name: member.name,
     member_type: member.member_type,
-    signature: member.signature,
     source_anchor: anchorToOutput(parseStoredSourceAnchor(member.source_anchor)),
     summary: member.summary,
+    usage_notes: member.usage_notes,
+    limitations: member.limitations,
+    capability_tags: loadEntryCapabilityTags(context, 'member', member.id),
     snippet: compactSnippet(member.snippet),
   }));
 
@@ -4392,6 +5616,9 @@ function artifactEntryFromRow(context, row) {
     module_path: row.module_path,
     source_anchor: anchorToOutput(parseStoredSourceAnchor(row.source_anchor)),
     summary: row.summary,
+    usage_notes: row.usage_notes,
+    limitations: row.limitations,
+    capability_tags: loadEntryCapabilityTags(context, 'artifact', row.artifact_id),
     snippet: compactSnippet(row.snippet),
     origin: {
       key: row.origin_key,
@@ -4405,20 +5632,24 @@ function artifactEntryFromRow(context, row) {
   };
 }
 
-function memberEntryFromRow(row) {
+function memberEntryFromRow(context, row) {
+  const signatures = memberSignatureFields(loadMemberSignatures(context, row.member_id));
   return {
+    ...signatures,
     kind: 'member',
     selector: `member:${row.member_key}`,
     identifier: row.member_key,
     title: `${row.artifact_name}.${row.member_name}`,
     name: row.member_name,
     member_type: row.member_type,
-    signature: row.signature,
     language: row.language,
     framework: row.framework,
     module_path: row.module_path,
     source_anchor: anchorToOutput(parseStoredSourceAnchor(row.source_anchor)),
     summary: row.summary,
+    usage_notes: row.usage_notes,
+    limitations: row.limitations,
+    capability_tags: loadEntryCapabilityTags(context, 'member', row.member_id),
     snippet: compactSnippet(row.snippet),
     artifact: {
       key: row.artifact_key,
@@ -4432,6 +5663,15 @@ function memberEntryFromRow(row) {
       priority: configuredOriginPriority({ origin_type: row.origin_type, origin_priority: row.origin_priority === null || row.origin_priority === undefined ? null : Number(row.origin_priority) }),
       priority_reason: row.origin_priority_reason,
     },
+  };
+}
+
+function memberSignatureFields(signatures) {
+  const items = signatures.map(signatureEntryToOutput);
+  return {
+    signature: items[0]?.signature ?? null,
+    signature_count: items.length,
+    signatures: items,
   };
 }
 
@@ -4452,6 +5692,9 @@ function templateEntryFromRow(context, row) {
     module_path: row.module_path,
     source_anchor: instances[0]?.source_anchor ?? null,
     summary: row.summary,
+    usage_notes: row.usage_notes,
+    limitations: row.limitations,
+    capability_tags: loadEntryCapabilityTags(context, 'template_pattern', row.pattern_id),
     snippet: compactSnippet(row.snippet),
     instance_count: Number(row.instance_count ?? instances.length),
     instances,
@@ -4492,7 +5735,7 @@ function loadCatalogEntry(context, selector) {
     },
     {
       kind: 'member',
-      load: () => loadMemberRows(context, parsed.identifiers).map(memberEntryFromRow),
+      load: () => loadMemberRows(context, parsed.identifiers).map((row) => memberEntryFromRow(context, row)),
     },
     {
       kind: 'template_pattern',
@@ -4662,6 +5905,26 @@ function verifySourceAnchor(rootPath, anchorOutput, hints = {}) {
   };
 }
 
+function memberVerificationAnchors(member, labelPrefix) {
+  const signatures = Array.isArray(member.signatures) && member.signatures.length > 0
+    ? member.signatures
+    : [{
+      signature: member.signature,
+      source_anchor: member.source_anchor,
+    }];
+
+  return signatures.map((signature, index) => ({
+    label: `${labelPrefix}:signature:${index + 1}`,
+    anchor: signature.source_anchor,
+    hints: {
+      name: member.name,
+      signature: signature.signature,
+      exactNeedles: [signature.signature],
+      snippet: member.snippet,
+    },
+  }));
+}
+
 function verificationAnchors(entry) {
   if (entry.kind === 'artifact') {
     return [
@@ -4673,27 +5936,11 @@ function verificationAnchors(entry) {
           snippet: entry.snippet,
         },
       },
-      ...entry.members.map((member) => ({
-        label: `member:${member.name}`,
-        anchor: member.source_anchor,
-        hints: {
-          name: member.name,
-          signature: member.signature,
-          snippet: member.snippet,
-        },
-      })),
+      ...entry.members.flatMap((member) => memberVerificationAnchors(member, `member:${member.name}`)),
     ];
   }
   if (entry.kind === 'member') {
-    return [{
-      label: 'member',
-      anchor: entry.source_anchor,
-      hints: {
-        name: entry.name,
-        signature: entry.signature,
-        snippet: entry.snippet,
-      },
-    }];
+    return memberVerificationAnchors(entry, 'member');
   }
   if (entry.kind === 'template_pattern') {
     return entry.instances.map((instance, index) => ({
@@ -4775,6 +6022,18 @@ function buildShowOutput(context, state, selector) {
   };
 }
 
+function renderCapabilityTags(tags) {
+  if (!Array.isArray(tags) || tags.length === 0) {
+    return null;
+  }
+
+  return tags.map((tag) => `\`${tag.tag}\``).join(', ');
+}
+
+function renderSignatureLines(signatures, prefix = '- ') {
+  return (signatures ?? []).map((signature) => `${prefix}\`${signature.signature}\` at \`${signature.source_anchor?.text ?? 'n/a'}\``);
+}
+
 function renderShowMarkdown(output) {
   const lines = [
     '# Tool Catalog Show',
@@ -4805,7 +6064,20 @@ function renderShowMarkdown(output) {
     if (entry.summary) {
       lines.push(`- Use: ${entry.summary}`);
     }
-    if (entry.signature) {
+    const entryTags = renderCapabilityTags(entry.capability_tags);
+    if (entryTags) {
+      lines.push(`- Tags: ${entryTags}`);
+    }
+    if (entry.usage_notes) {
+      lines.push(`- Usage notes: ${entry.usage_notes}`);
+    }
+    if (entry.limitations) {
+      lines.push(`- Limitations: ${entry.limitations}`);
+    }
+    if ((entry.signatures?.length ?? 0) > 1) {
+      lines.push(`- Signatures: ${entry.signatures.length}`);
+      lines.push(...renderSignatureLines(entry.signatures, '  - '));
+    } else if (entry.signature) {
       lines.push(`- Example: \`${entry.signature}\``);
     } else if (entry.snippet) {
       lines.push(`- Example: \`${entry.snippet}\``);
@@ -4816,7 +6088,15 @@ function renderShowMarkdown(output) {
     if (entry.members?.length > 0) {
       lines.push('', '## Members');
       for (const member of entry.members.slice(0, 12)) {
-        lines.push(`- \`${member.name}\` ${member.signature ? `\`${member.signature}\` ` : ''}at \`${member.source_anchor?.text ?? 'n/a'}\``);
+        const memberTags = renderCapabilityTags(member.capability_tags);
+        lines.push(`- \`${member.name}\` ${member.signature_count > 1 ? `${member.signature_count} signatures ` : member.signature ? `\`${member.signature}\` ` : ''}at \`${member.source_anchor?.text ?? 'n/a'}\`${memberTags ? `; tags ${memberTags}` : ''}`);
+        if (member.summary) {
+          lines.push(`  Use: ${member.summary}`);
+        }
+        if (member.signature_count > 1) {
+          lines.push(`  - Signatures: ${member.signature_count}`);
+          lines.push(...renderSignatureLines(member.signatures.slice(0, 4), '  - '));
+        }
       }
     }
     if (entry.instances?.length > 0) {
@@ -5014,9 +6294,23 @@ function handleDiscoverCommand(args, options) {
   const catalogHome = getCatalogHome();
   const config = readUserConfig(catalogHome);
   const context = createProjectContext(discoverOptions, config);
-  const output = buildDiscoveryDryRun(context, discoverOptions);
+  const output = writeDiscoveryRunFiles(context, buildDiscoveryDryRun(context, discoverOptions));
   printDiscoveryDryRun(output, discoverOptions);
   return 0;
+}
+
+function handleTagsCommand(args, options) {
+  const tagsOptions = parseTagsOptions(args, options);
+  if (tagsOptions.help) {
+    printTagsHelp();
+    return 0;
+  }
+
+  const context = createConsultContext(tagsOptions);
+  const state = consultIndexState(context);
+  const output = buildTagsOutput(context, state);
+  printTagsOutput(output, tagsOptions);
+  return state.readable ? 0 : 1;
 }
 
 function handleQueryCommand(args, options) {
@@ -5092,6 +6386,9 @@ function main(argv) {
     }
     if (command === 'discover') {
       return handleDiscoverCommand(commandArgs, options);
+    }
+    if (command === 'tags') {
+      return handleTagsCommand(commandArgs, options);
     }
     if (command === 'query') {
       return handleQueryCommand(commandArgs, options);

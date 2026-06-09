@@ -31,6 +31,8 @@ const documentedCommands = [
   'tool-catalog discover --full --dry-run',
   'tool-catalog discover --changed <paths...> --dry-run',
   'tool-catalog discover --apply <decisions.json>',
+  'tool-catalog tags',
+  'tool-catalog query --tag <tag> --goal <text>',
   'tool-catalog query --goal <text>',
   'tool-catalog show <selector>',
   'tool-catalog verify <selector>',
@@ -106,19 +108,26 @@ function checkToolCatalogSkillDocs() {
     'discover --changed <paths...> --dry-run',
     'discover --apply <decisions.json>',
     'two-phase Tool Catalog CLI workflow',
-    'decisions JSON',
+    'Discovery Review Pack',
+    'Discovery Decision File',
+    'Capability Tags',
+    'Selection Descriptions',
     'relative source anchors',
   ]) {
     assertIncludes(discover, expected, 'tool-catalog-discover');
   }
 
   for (const expected of [
+    'tool-catalog tags --root <project>',
+    'query --tag <tag>',
     'query --goal',
     'show <selector>',
     'verify <selector>',
+    'Capability Tag Vocabulary',
+    'strict tag filters',
     'Read-Only Rules',
     'source anchors',
-    'broaden once',
+    'broaden once without tag filters',
   ]) {
     assertIncludes(consult, expected, 'tool-catalog-consult');
   }
@@ -135,6 +144,12 @@ function checkDocumentedCommandAvailability() {
     assertIncludes(documentedText, command, 'Tool Catalog documentation');
   }
 
+  assertIncludes(readme, 'Discovery Review Pack', 'README Tool Catalog workflow');
+  assertIncludes(readme, 'Discovery Decision File', 'README Tool Catalog workflow');
+  assertIncludes(readme, 'Capability Tag Vocabulary', 'README Tool Catalog workflow');
+  assertIncludes(readme, 'exact `--tag` filters', 'README Tool Catalog workflow');
+  assert(!readme.includes('Planned Capability Tag command surface'), 'README must describe implemented Tool Catalog commands, not planned placeholders');
+
   for (const expected of [
     'doctor',
     'config project-id <id>',
@@ -142,6 +157,8 @@ function checkDocumentedCommandAvailability() {
     'discover --full --dry-run',
     'discover --changed <paths...> --dry-run',
     'discover --apply <decisions.json>',
+    'tool-catalog tags [--root <path>] [--json]',
+    'tool-catalog query --tag <tag> --goal <text>',
     'query --goal <text>',
     'show <selector>',
     'verify <selector>',
@@ -151,6 +168,7 @@ function checkDocumentedCommandAvailability() {
 
   run(process.execPath, [cliPath, 'config', '--help']);
   run(process.execPath, [cliPath, 'discover', '--help']);
+  run(process.execPath, [cliPath, 'tags', '--help']);
   run(process.execPath, [cliPath, 'query', '--help']);
   run(process.execPath, [cliPath, 'show', '--help']);
   run(process.execPath, [cliPath, 'verify', '--help']);
