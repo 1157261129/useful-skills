@@ -33,7 +33,7 @@ Commands:
   help              Print this help text.
   doctor            Check runtime dependencies required by the Tool Catalog CLI.
   config            Manage user-level Tool Catalog configuration.
-  discover          Extract reviewable discovery candidates or apply reviewed decisions.
+  discover          Harvest discovery Findings and evidence artifacts or apply reviewed decisions.
   tags              List canonical capability tags available in the project index.
   query             Search the existing project index for reusable entries.
   show              Show compact details for one indexed entry.
@@ -68,7 +68,7 @@ Usage:
 Modes:
   --full            Scan the resolved target project root.
   --changed <paths> Scan only the provided files or directories.
-  --dry-run         Emit reviewable candidates without mutating the project index.
+  --dry-run         Emit Finding evidence artifacts without mutating the project index.
   --apply <file>    Apply reviewed accept, ignore, and defer decisions to the project index.
 
 Filters:
@@ -78,7 +78,7 @@ Filters:
 
 Output:
   Default output is compact Markdown for agent review.
-  --json prints dry-run candidates or apply summary data as structured JSON.`;
+  --json prints dry-run Finding summaries and evidence artifact paths or apply summary data as structured JSON.`;
 
 const QUERY_HELP_TEXT = `Tool Catalog query
 
@@ -163,9 +163,8 @@ const CATALOG_COUNT_KEYS = [
 const MAX_SUMMARY_CHARS = 280;
 const MAX_SNIPPET_CHARS = 500;
 const CAPABILITY_TAG_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-const MAX_REVIEW_SNIPPET_CHARS = 240;
-const REVIEW_SNIPPET_LINE_COUNT = 3;
 const MIN_CONSULT_SCHEMA_VERSION = 4;
+const MIN_PRECLASS_SCHEMA_VERSION = 5;
 const CAPABILITY_TAG_VOCABULARY = new Map([
   ['api-client', {
     description: 'Reusable API client request helpers and request-flow templates.',
@@ -2286,6 +2285,717 @@ function extractTemplateCandidates(records) {
   return candidates;
 }
 
+function addFindingDedupeKey(keys, kind, value) {
+  const normalized = normalizeNullableString(value);
+  if (!normalized) {
+    return;
+  }
+
+  keys.push({
+    kind,
+    value: normalized,
+  });
+}
+
+function findingSymbol(finding) {
+  if (finding.finding_type === 'utility_artifact') {
+    return finding.qualified_name ?? finding.name ?? null;
+  }
+  if (finding.finding_type === 'template_pattern') {
+    return finding.pattern_key ?? finding.name ?? null;
+  }
+  if (finding.finding_type === 'observed_external_usage') {
+    return finding.origin_key ?? null;
+  }
+
+  return finding.name ?? null;
+}
+
+function primaryFindingAnchor(finding) {
+  if (finding.source_anchor) {
+    return finding.source_anchor;
+  }
+  if (Array.isArray(finding.instances) && finding.instances[0]?.source_anchor) {
+    return finding.instances[0].source_anchor;
+  }
+  if (finding.call_anchor) {
+    return finding.call_anchor;
+  }
+
+  return null;
+}
+
+function buildFindingDedupeKeys(finding) {
+  const keys = [];
+  const primaryAnchor = primaryFindingAnchor(finding);
+
+  if (finding.finding_type === 'utility_artifact') {
+    addFindingDedupeKey(keys, 'anchor', sourceAnchorText(primaryAnchor));
+    addFindingDedupeKey(keys, 'symbol', findingSymbol(finding));
+    const signatureBundle = (finding.members ?? [])
+      .map((member) => `${member.member_key}|${member.signature}|${sourceAnchorText(member.source_anchor)}`)
+      .sort()
+      .join('||');
+    addFindingDedupeKey(keys, 'signature', signatureBundle);
+  } else if (finding.finding_type === 'observed_external_usage') {
+    addFindingDedupeKey(keys, 'anchor', sourceAnchorText(primaryAnchor));
+    addFindingDedupeKey(keys, 'import', `${sourceAnchorText(finding.source_anchor)}|${finding.import_text ?? ''}`);
+    if (finding.call_anchor || finding.call_text) {
+      addFindingDedupeKey(keys, 'call', `${sourceAnchorText(finding.call_anchor)}|${finding.call_text ?? ''}`);
+    }
+  } else if (finding.finding_type === 'template_pattern') {
+    const instanceAnchors = (finding.instances ?? [])
+      .map((instance) => sourceAnchorText(instance.source_anchor))
+      .sort()
+      .join('||');
+    addFindingDedupeKey(keys, 'instance-anchor-set', instanceAnchors);
+    addFindingDedupeKey(keys, 'anchor', sourceAnchorText(primaryAnchor));
+  }
+
+  return uniqueByKey(keys, (key) => `${key.kind}:${key.value}`);
+}
+
+function buildFindingFingerprint(finding, dedupeKeys) {
+  const material = {
+    finding_type: finding.finding_type,
+    origin_key: finding.origin_key ?? null,
+    language: finding.language ?? null,
+    framework: finding.framework ?? null,
+    name: finding.name ?? null,
+    artifact_type: finding.artifact_type ?? null,
+    module_path: finding.module_path ?? null,
+    source_anchor: sourceAnchorText(finding.source_anchor),
+    call_anchor: sourceAnchorText(finding.call_anchor),
+    import_text: finding.import_text ?? null,
+    call_text: finding.call_text ?? null,
+    member_signatures: (finding.members ?? [])
+      .map((member) => `${member.member_key}|${member.signature}|${sourceAnchorText(member.source_anchor)}`)
+      .sort(),
+    imported_by: (finding.imported_by ?? [])
+      .map((item) => `${item.source_path}|${sourceAnchorText(item.source_anchor)}|${item.import_text ?? ''}`)
+      .sort(),
+    instance_anchors: (finding.instances ?? [])
+      .map((instance) => `${sourceAnchorText(instance.source_anchor)}|${instance.module_path ?? ''}`)
+      .sort(),
+    dedupe_keys: dedupeKeys.map((key) => `${key.kind}:${key.value}`),
+  };
+
+  return sha256(JSON.stringify(material));
+}
+
+function candidateToFinding(candidate) {
+  const finding = {
+    finding_id: candidate.candidate_id,
+    finding_type: candidate.candidate_type,
+    origin: candidate.origin ?? null,
+    language: candidate.language ?? null,
+    framework: candidate.framework ?? null,
+    name: candidate.name ?? null,
+    qualified_name: candidate.qualified_name ?? null,
+    artifact_type: candidate.artifact_type ?? null,
+    module_path: candidate.module_path ?? null,
+    origin_key: candidate.origin_key ?? null,
+    pattern_key: candidate.pattern_key ?? null,
+    source_anchor: candidate.source_anchor ?? null,
+    call_anchor: candidate.call_anchor ?? null,
+    import_text: candidate.import_text ?? null,
+    call_text: candidate.call_text ?? null,
+    structural_evidence: candidate.evidence ?? [],
+  };
+
+  if (Array.isArray(candidate.members) && candidate.members.length > 0) {
+    finding.members = candidate.members.map((member) => ({
+      member_key: member.member_key,
+      name: member.name,
+      member_type: member.member_type,
+      signature: member.signature,
+      source_anchor: member.source_anchor,
+    }));
+  }
+  if (Array.isArray(candidate.imported_by) && candidate.imported_by.length > 0) {
+    finding.imported_by = candidate.imported_by.map((item) => ({
+      source_path: item.source_path,
+      source_anchor: item.source_anchor,
+      import_text: item.import_text,
+    }));
+  }
+  if (Array.isArray(candidate.instances) && candidate.instances.length > 0) {
+    finding.instances = candidate.instances.map((instance) => ({
+      source_anchor: instance.source_anchor,
+      module_path: instance.module_path ?? null,
+      snippet: instance.snippet ?? null,
+    }));
+  }
+  if (Number.isInteger(candidate.instance_count)) {
+    finding.instance_count = candidate.instance_count;
+  }
+  if (Number.isInteger(candidate.threshold)) {
+    finding.threshold = candidate.threshold;
+  }
+
+  const dedupeKeys = buildFindingDedupeKeys(finding);
+  const fingerprint = buildFindingFingerprint(finding, dedupeKeys);
+
+  finding.discovery_fingerprint = fingerprint;
+  finding.fingerprint_algorithm = 'sha256';
+  finding.mechanical_dedupe = {
+    keys: [
+      ...dedupeKeys,
+      {
+        kind: 'fingerprint',
+        value: fingerprint,
+      },
+    ],
+  };
+
+  return finding;
+}
+
+function groupFindingsByType(findings) {
+  const grouped = {
+    utility_artifacts: [],
+    observed_external_usages: [],
+    template_patterns: [],
+  };
+
+  for (const finding of findings) {
+    if (finding.finding_type === 'utility_artifact') {
+      grouped.utility_artifacts.push(finding);
+    } else if (finding.finding_type === 'observed_external_usage') {
+      grouped.observed_external_usages.push(finding);
+    } else if (finding.finding_type === 'template_pattern') {
+      grouped.template_patterns.push(finding);
+    }
+  }
+
+  return grouped;
+}
+
+function allDiscoveryFindings(groupedFindings) {
+  return [
+    ...groupedFindings.utility_artifacts,
+    ...groupedFindings.observed_external_usages,
+    ...groupedFindings.template_patterns,
+  ];
+}
+
+function buildFindingCounts(groupedFindings) {
+  const counts = {
+    utility_artifacts: groupedFindings.utility_artifacts.length,
+    observed_external_usages: groupedFindings.observed_external_usages.length,
+    template_patterns: groupedFindings.template_patterns.length,
+  };
+
+  return {
+    ...counts,
+    total: counts.utility_artifacts + counts.observed_external_usages + counts.template_patterns,
+  };
+}
+
+function mechanicallyDedupeFindings(groupedFindings) {
+  const deduped = {
+    utility_artifacts: [],
+    observed_external_usages: [],
+    template_patterns: [],
+  };
+  const seenKeys = new Map();
+  const duplicateGroups = [];
+
+  for (const groupName of ['utility_artifacts', 'observed_external_usages', 'template_patterns']) {
+    for (const finding of groupedFindings[groupName]) {
+      let duplicate = null;
+      for (const key of finding.mechanical_dedupe.keys) {
+        const identity = `${finding.finding_type}:${key.kind}:${key.value}`;
+        const existing = seenKeys.get(identity);
+        if (existing) {
+          duplicate = {
+            dedupe_key: key,
+            kept_finding_id: existing.finding_id,
+            removed_finding_id: finding.finding_id,
+          };
+          break;
+        }
+      }
+
+      if (duplicate) {
+        duplicateGroups.push({
+          finding_type: finding.finding_type,
+          dedupe_kind: duplicate.dedupe_key.kind,
+          dedupe_value: duplicate.dedupe_key.value,
+          kept_finding_id: duplicate.kept_finding_id,
+          removed_finding_id: duplicate.removed_finding_id,
+        });
+        continue;
+      }
+
+      deduped[groupName].push(finding);
+      for (const key of finding.mechanical_dedupe.keys) {
+        seenKeys.set(`${finding.finding_type}:${key.kind}:${key.value}`, finding);
+      }
+    }
+  }
+
+  const inputTotal = allDiscoveryFindings(groupedFindings).length;
+  const keptCounts = buildFindingCounts(deduped);
+  return {
+    findings: deduped,
+    duplicate_groups: duplicateGroups,
+    summary: {
+      input_total: inputTotal,
+      kept_total: keptCounts.total,
+      removed_total: inputTotal - keptCounts.total,
+      duplicate_groups: duplicateGroups.length,
+      rules: ['anchor', 'symbol', 'signature', 'import', 'call', 'fingerprint'],
+    },
+  };
+}
+
+function buildFindingIndexItem(finding) {
+  const primaryAnchor = primaryFindingAnchor(finding);
+  const symbol = findingSymbol(finding);
+  return {
+    finding_id: finding.finding_id,
+    finding_type: finding.finding_type,
+    language: finding.language ?? null,
+    framework: finding.framework ?? null,
+    symbol,
+    path: primaryAnchor?.path ?? null,
+    anchor: sourceAnchorText(primaryAnchor),
+    discovery_fingerprint: finding.discovery_fingerprint,
+    dedupe_keys: finding.mechanical_dedupe.keys.map((key) => `${key.kind}:${key.value}`),
+  };
+}
+
+function uniqueSortedStrings(values) {
+  return [...new Set(values.filter(Boolean).map((value) => String(value)))].sort();
+}
+
+function findingSourcePaths(finding) {
+  return uniqueSortedStrings([
+    finding.source_anchor?.path,
+    finding.call_anchor?.path,
+    ...(finding.members ?? []).map((member) => member.source_anchor?.path),
+    ...(finding.imported_by ?? []).map((item) => item.source_anchor?.path),
+    ...(finding.instances ?? []).map((instance) => instance.source_anchor?.path),
+  ]);
+}
+
+function findingMatchKeys(finding) {
+  const keys = [];
+  const primaryAnchor = primaryFindingAnchor(finding);
+  if (primaryAnchor?.text) {
+    keys.push(`${finding.finding_type}|anchor|${primaryAnchor.text}`);
+  }
+  if (finding.finding_type === 'template_pattern' && finding.pattern_key) {
+    keys.push(`${finding.finding_type}|pattern|${finding.pattern_key}`);
+  }
+  if (finding.call_anchor?.text) {
+    keys.push(`${finding.finding_type}|call-anchor|${finding.call_anchor.text}`);
+  }
+  return uniqueSortedStrings(keys);
+}
+
+function utilityArtifactToFindingRecord(artifact) {
+  return {
+    finding_type: 'utility_artifact',
+    origin_key: artifact.origin.originKey,
+    language: artifact.language,
+    framework: artifact.framework,
+    name: artifact.name,
+    artifact_type: artifact.artifactType,
+    module_path: artifact.modulePath,
+    source_anchor: artifact.sourceAnchor,
+    members: artifact.members.flatMap((member) => member.signatures.map((signature) => ({
+      member_key: member.memberKey,
+      signature: signature.signature,
+      source_anchor: signature.sourceAnchor,
+    }))),
+  };
+}
+
+function templatePatternToFindingRecord(pattern) {
+  return {
+    finding_type: 'template_pattern',
+    language: pattern.language,
+    framework: pattern.framework,
+    name: pattern.name,
+    module_path: pattern.modulePath,
+    pattern_key: pattern.patternKey,
+    instances: pattern.instances.map((instance) => ({
+      source_anchor: instance.sourceAnchor,
+      module_path: instance.modulePath,
+    })),
+  };
+}
+
+function externalUsageToFindingRecord(usage) {
+  return {
+    finding_type: 'observed_external_usage',
+    origin_key: usage.origin.originKey,
+    language: usage.language,
+    framework: usage.framework,
+    source_anchor: usage.sourceAnchor,
+    import_text: usage.importText,
+    call_text: usage.callText,
+  };
+}
+
+function traceDecisionToFindingRecord(candidate) {
+  return {
+    finding_type: candidate.candidateType,
+    source_anchor: candidate.sourceAnchor,
+    pattern_key: candidate.patternKey ?? null,
+  };
+}
+
+function fingerprintForFindingRecord(finding) {
+  const dedupeKeys = buildFindingDedupeKeys(finding);
+  return buildFindingFingerprint(finding, dedupeKeys);
+}
+
+function persistedDiscoveryRecord(recordFamily, recordKind, recordKey, finding, discoveryFingerprint = null) {
+  return {
+    recordFamily,
+    recordKind,
+    recordKey,
+    sourceAnchor: primaryFindingAnchor(finding),
+    sourcePaths: findingSourcePaths(finding),
+    matchKeys: findingMatchKeys(finding),
+    fingerprintAlgorithm: 'sha256',
+    structuralFingerprint: discoveryFingerprint ?? fingerprintForFindingRecord(finding),
+  };
+}
+
+function persistedDiscoveryRecordSummary(record) {
+  return {
+    record_family: record.recordFamily,
+    record_kind: record.recordKind,
+    record_key: record.recordKey,
+    source_anchor: anchorToOutput(record.sourceAnchor),
+  };
+}
+
+function emptyPreclassificationFindingCounts(totalFindings) {
+  return {
+    new: 0,
+    unchanged_catalog_entries: 0,
+    unchanged_suppressions: 0,
+    unchanged_deferrals: 0,
+    reopened_catalog_entries: 0,
+    reopened_suppressions: 0,
+    reopened_deferrals: 0,
+    review_queue: 0,
+    skipped: 0,
+    total: totalFindings,
+  };
+}
+
+function emptyPreclassificationCleanupCounts() {
+  return {
+    stale_catalog_entries: 0,
+    stale_suppressions: 0,
+    stale_deferrals: 0,
+    missing_source_records: 0,
+    total: 0,
+  };
+}
+
+function buildReviewQueueItem(finding, reason, matchedRecord = null) {
+  return {
+    finding_id: finding.finding_id,
+    finding_type: finding.finding_type,
+    reason,
+    matched_record: matchedRecord ? persistedDiscoveryRecordSummary(matchedRecord) : null,
+  };
+}
+
+function buildSkippedFindingItem(finding, reason, matchedRecord) {
+  return {
+    finding_id: finding.finding_id,
+    finding_type: finding.finding_type,
+    reason,
+    matched_record: persistedDiscoveryRecordSummary(matchedRecord),
+  };
+}
+
+function buildCleanupQueueItem(record, reason, verification = null) {
+  return {
+    record_family: record.recordFamily,
+    record_kind: record.recordKind,
+    record_key: record.recordKey,
+    reason,
+    source_anchor: anchorToOutput(record.sourceAnchor),
+    verification,
+  };
+}
+
+function parseJsonArrayField(value) {
+  const text = normalizeNullableString(value);
+  if (!text) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function isPathCoveredByChangedPaths(relativePath, changedPaths) {
+  return changedPaths.some((scope) => {
+    if (scope.is_directory) {
+      return relativePath === scope.path || relativePath.startsWith(`${scope.path}/`);
+    }
+    return relativePath === scope.path;
+  });
+}
+
+function recordInPreclassificationScope(record, scan) {
+  if (scan.mode !== 'changed') {
+    return true;
+  }
+  return record.sourcePaths.some((sourcePath) => isPathCoveredByChangedPaths(sourcePath, scan.changed_paths));
+}
+
+function preclassificationIndexState(context) {
+  const exists = fs.existsSync(context.dbPath);
+  const schemaVersion = exists ? getReadOnlySchemaVersion(context.dbPath) : 0;
+  return {
+    exists,
+    schemaVersion,
+    readable: exists && schemaVersion >= MIN_PRECLASS_SCHEMA_VERSION,
+    reason: exists ? (schemaVersion >= MIN_PRECLASS_SCHEMA_VERSION ? null : 'schema-too-old') : 'missing-index',
+  };
+}
+
+function loadPersistedDiscoveryRecords(context, scan) {
+  const state = preclassificationIndexState(context);
+  if (!state.readable) {
+    return {
+      state,
+      records: [],
+    };
+  }
+
+  const rows = runSqliteReadOnlyJson(context.dbPath, `
+SELECT
+  record_family,
+  record_kind,
+  record_key,
+  source_anchor,
+  source_paths,
+  match_keys,
+  structural_fingerprint,
+  fingerprint_algorithm
+FROM discovery_fingerprints
+WHERE project_id = ${sqlString(context.projectId)}
+ORDER BY record_family, record_kind, record_key;
+`);
+
+  const records = rows.map((row) => ({
+    recordFamily: row.record_family,
+    recordKind: row.record_kind,
+    recordKey: row.record_key,
+    sourceAnchor: parseStoredSourceAnchor(row.source_anchor),
+    sourcePaths: uniqueSortedStrings(parseJsonArrayField(row.source_paths)),
+    matchKeys: uniqueSortedStrings(parseJsonArrayField(row.match_keys)),
+    structuralFingerprint: row.structural_fingerprint,
+    fingerprintAlgorithm: row.fingerprint_algorithm ?? 'sha256',
+  })).filter((record) => recordInPreclassificationScope(record, scan));
+
+  return {
+    state,
+    records,
+  };
+}
+
+function recordPriority(record) {
+  if (record.recordFamily === 'catalog_entry') {
+    return 3;
+  }
+  if (record.recordFamily === 'suppression') {
+    return 2;
+  }
+  if (record.recordFamily === 'deferral') {
+    return 1;
+  }
+  return 0;
+}
+
+function chooseBestMatchedRecord(records) {
+  return [...records].sort((left, right) => {
+    if (recordPriority(right) !== recordPriority(left)) {
+      return recordPriority(right) - recordPriority(left);
+    }
+    if (left.recordKind !== right.recordKind) {
+      return left.recordKind.localeCompare(right.recordKind);
+    }
+    return left.recordKey.localeCompare(right.recordKey);
+  })[0] ?? null;
+}
+
+function preclassificationReasonForUnchanged(record) {
+  if (record.recordFamily === 'catalog_entry') {
+    return 'unchanged-catalog-entry';
+  }
+  if (record.recordFamily === 'suppression') {
+    return 'unchanged-suppression';
+  }
+  return 'unchanged-deferral';
+}
+
+function preclassificationReasonForReopened(record) {
+  if (record.recordFamily === 'catalog_entry') {
+    return 'changed-catalog-entry';
+  }
+  if (record.recordFamily === 'suppression') {
+    return 'stale-suppression';
+  }
+  return 'stale-deferral';
+}
+
+function incrementPreclassificationFindingCount(counts, reason) {
+  if (reason === 'new-finding') {
+    counts.new += 1;
+  } else if (reason === 'unchanged-catalog-entry') {
+    counts.unchanged_catalog_entries += 1;
+    counts.skipped += 1;
+  } else if (reason === 'unchanged-suppression') {
+    counts.unchanged_suppressions += 1;
+    counts.skipped += 1;
+  } else if (reason === 'unchanged-deferral') {
+    counts.unchanged_deferrals += 1;
+    counts.skipped += 1;
+  } else if (reason === 'changed-catalog-entry') {
+    counts.reopened_catalog_entries += 1;
+  } else if (reason === 'stale-suppression') {
+    counts.reopened_suppressions += 1;
+  } else if (reason === 'stale-deferral') {
+    counts.reopened_deferrals += 1;
+  }
+  if (reason === 'new-finding' || reason === 'changed-catalog-entry' || reason === 'stale-suppression' || reason === 'stale-deferral') {
+    counts.review_queue += 1;
+  }
+}
+
+function incrementPreclassificationCleanupCount(counts, reason) {
+  if (reason === 'stale-catalog-entry') {
+    counts.stale_catalog_entries += 1;
+  } else if (reason === 'stale-suppression') {
+    counts.stale_suppressions += 1;
+  } else if (reason === 'stale-deferral') {
+    counts.stale_deferrals += 1;
+  } else if (reason === 'missing-source') {
+    counts.missing_source_records += 1;
+  }
+  counts.total += 1;
+}
+
+function preclassificationCleanupReason(record, verification) {
+  if (!verification.ok) {
+    return 'missing-source';
+  }
+  if (record.recordFamily === 'catalog_entry') {
+    return 'stale-catalog-entry';
+  }
+  if (record.recordFamily === 'suppression') {
+    return 'stale-suppression';
+  }
+  return 'stale-deferral';
+}
+
+function buildDiscoveryPreclassification(context, scan, groupedFindings) {
+  const findings = allDiscoveryFindings(groupedFindings);
+  const findingCounts = emptyPreclassificationFindingCounts(findings.length);
+  const cleanupCounts = emptyPreclassificationCleanupCounts();
+  const loaded = loadPersistedDiscoveryRecords(context, scan);
+  const recordsByMatchKey = new Map();
+
+  for (const record of loaded.records) {
+    for (const matchKey of record.matchKeys) {
+      const existing = recordsByMatchKey.get(matchKey) ?? [];
+      existing.push(record);
+      recordsByMatchKey.set(matchKey, existing);
+    }
+  }
+
+  const matchedRecordKeys = new Set();
+  const reviewQueue = [];
+  const skipped = [];
+
+  for (const finding of findings) {
+    const candidateRecords = [];
+    const seenRecords = new Set();
+    for (const matchKey of findingMatchKeys(finding)) {
+      for (const record of recordsByMatchKey.get(matchKey) ?? []) {
+        const recordIdentity = `${record.recordFamily}:${record.recordKind}:${record.recordKey}`;
+        if (!seenRecords.has(recordIdentity)) {
+          seenRecords.add(recordIdentity);
+          candidateRecords.push(record);
+        }
+      }
+    }
+
+    const unchangedRecord = candidateRecords.find((record) => record.structuralFingerprint === finding.discovery_fingerprint) ?? null;
+    if (unchangedRecord) {
+      const reason = preclassificationReasonForUnchanged(unchangedRecord);
+      incrementPreclassificationFindingCount(findingCounts, reason);
+      skipped.push(buildSkippedFindingItem(finding, reason, unchangedRecord));
+      matchedRecordKeys.add(`${unchangedRecord.recordFamily}:${unchangedRecord.recordKind}:${unchangedRecord.recordKey}`);
+      continue;
+    }
+
+    const reopenedRecord = chooseBestMatchedRecord(candidateRecords);
+    if (reopenedRecord) {
+      const reason = preclassificationReasonForReopened(reopenedRecord);
+      incrementPreclassificationFindingCount(findingCounts, reason);
+      reviewQueue.push(buildReviewQueueItem(finding, reason, reopenedRecord));
+      matchedRecordKeys.add(`${reopenedRecord.recordFamily}:${reopenedRecord.recordKind}:${reopenedRecord.recordKey}`);
+      continue;
+    }
+
+    incrementPreclassificationFindingCount(findingCounts, 'new-finding');
+    reviewQueue.push(buildReviewQueueItem(finding, 'new-finding'));
+  }
+
+  const cleanupQueue = [];
+  for (const record of loaded.records) {
+    const recordIdentity = `${record.recordFamily}:${record.recordKind}:${record.recordKey}`;
+    if (matchedRecordKeys.has(recordIdentity)) {
+      continue;
+    }
+    const verification = verifySourceAnchor(context.rootPath, anchorToOutput(record.sourceAnchor));
+    const reason = preclassificationCleanupReason(record, verification);
+    incrementPreclassificationCleanupCount(cleanupCounts, reason);
+    cleanupQueue.push(buildCleanupQueueItem(record, reason, verification));
+  }
+
+  const recordCounts = {
+    catalog_entries: loaded.records.filter((record) => record.recordFamily === 'catalog_entry').length,
+    suppressions: loaded.records.filter((record) => record.recordFamily === 'suppression').length,
+    deferrals: loaded.records.filter((record) => record.recordFamily === 'deferral').length,
+  };
+
+  return {
+    status: loaded.state.readable ? 'ready' : loaded.state.reason,
+    index: {
+      status: loaded.state.readable ? 'ready' : loaded.state.reason,
+      schema_version: loaded.state.schemaVersion,
+      readable: loaded.state.readable,
+    },
+    record_counts: {
+      ...recordCounts,
+      total: recordCounts.catalog_entries + recordCounts.suppressions + recordCounts.deferrals,
+    },
+    finding_counts: findingCounts,
+    cleanup_counts: cleanupCounts,
+    review_queue: reviewQueue,
+    skipped,
+    cleanup_queue: cleanupQueue,
+  };
+}
+
 function buildDiscoveryDryRun(context, discoverOptions) {
   const scope = buildScanScope(context.rootPath, discoverOptions);
   const records = readScanFiles(scope.files);
@@ -2298,41 +3008,93 @@ function buildDiscoveryDryRun(context, discoverOptions) {
   const templatePatterns = extractTemplateCandidates(records)
     .sort((left, right) => left.pattern_key.localeCompare(right.pattern_key));
 
+  const generatedAt = new Date().toISOString();
+  const project = projectContextToOutput(context);
+  const scan = {
+    mode: discoverOptions.mode,
+    root_path: context.rootPath,
+    scan_source: scope.source,
+    changed_paths: scope.changedScopes.map((scopeItem) => ({
+      input: scopeItem.input,
+      path: scopeItem.relativePath,
+      exists: scopeItem.exists,
+      is_directory: scopeItem.isDirectory,
+    })),
+    language_filters: discoverOptions.languages,
+    include_filters: discoverOptions.includeFilters,
+    exclude_filters: discoverOptions.excludeFilters,
+    files_considered: scope.filesConsidered,
+    files_in_scope: scope.scopedFiles,
+    files_scanned: records.length,
+    skipped_by_reason: scope.skippedByReason,
+    max_scan_file_bytes: MAX_SCAN_FILE_BYTES,
+  };
+  const candidates = {
+    utility_artifacts: utilityArtifacts,
+    observed_external_usages: observedExternalUsages,
+    template_patterns: templatePatterns,
+  };
+  const deduped = mechanicallyDedupeFindings(groupFindingsByType(allDiscoveryCandidates({
+    candidates,
+  }).map((candidate) => candidateToFinding(candidate))));
+  const findingCounts = buildFindingCounts(deduped.findings);
+  const preclassification = buildDiscoveryPreclassification(context, scan, deduped.findings);
+
   return {
-    kind: 'tool_catalog_discovery_dry_run',
-    version: 1,
-    generated_at: new Date().toISOString(),
-    dry_run: true,
-    index_mutated: false,
-    project: projectContextToOutput(context),
-    scan: {
-      mode: discoverOptions.mode,
-      root_path: context.rootPath,
-      scan_source: scope.source,
-      changed_paths: scope.changedScopes.map((scopeItem) => ({
-        input: scopeItem.input,
-        path: scopeItem.relativePath,
-        exists: scopeItem.exists,
-        is_directory: scopeItem.isDirectory,
-      })),
-      language_filters: discoverOptions.languages,
-      include_filters: discoverOptions.includeFilters,
-      exclude_filters: discoverOptions.excludeFilters,
-      files_considered: scope.filesConsidered,
-      files_in_scope: scope.scopedFiles,
-      files_scanned: records.length,
-      skipped_by_reason: scope.skippedByReason,
-      max_scan_file_bytes: MAX_SCAN_FILE_BYTES,
+    summary: {
+      kind: 'tool_catalog_discovery_dry_run',
+      version: 2,
+      generated_at: generatedAt,
+      dry_run: true,
+      index_mutated: false,
+      project,
+      scan,
+      finding_counts: findingCounts,
+      mechanical_dedupe: deduped.summary,
+      preclassification,
     },
-    candidates: {
-      utility_artifacts: utilityArtifacts,
-      observed_external_usages: observedExternalUsages,
-      template_patterns: templatePatterns,
+    findings_payload: {
+      kind: 'tool_catalog_discovery_findings',
+      version: 1,
+      generated_at: generatedAt,
+      dry_run: true,
+      index_mutated: false,
+      project,
+      scan,
+      finding_counts: findingCounts,
+      mechanical_dedupe: {
+        ...deduped.summary,
+        duplicate_groups: deduped.duplicate_groups,
+      },
+      preclassification,
+      findings: deduped.findings,
     },
-    decisions_schema: {
-      accepted_actions: ['accept', 'ignore', 'defer'],
-      expected_candidate_id_field: 'candidate_id',
-      apply_command: 'tool-catalog discover --apply <decisions.json>',
+    finding_index_payload: {
+      kind: 'tool_catalog_discovery_finding_index',
+      version: 1,
+      generated_at: generatedAt,
+      dry_run: true,
+      index_mutated: false,
+      project: {
+        project_id: project.project_id,
+        root_path: project.root_path,
+      },
+      scan: {
+        mode: scan.mode,
+        files_scanned: scan.files_scanned,
+      },
+      finding_counts: findingCounts,
+      items: allDiscoveryFindings(deduped.findings).map((finding) => buildFindingIndexItem(finding)),
+    },
+    compatibility_payload: {
+      kind: 'tool_catalog_discovery_candidate_compat',
+      version: 1,
+      generated_at: generatedAt,
+      dry_run: true,
+      index_mutated: false,
+      project,
+      scan,
+      candidates,
     },
   };
 }
@@ -2349,21 +3111,22 @@ function allDiscoveryCandidates(output) {
   ];
 }
 
-function buildDiscoveryRunId(output) {
-  const generatedAt = output.generated_at.replace(/[-:.TZ]/g, '').slice(0, 17);
-  const candidateKeys = allDiscoveryCandidates(output).map((candidate) => candidate.candidate_id).sort().join('\n');
-  return `${generatedAt}-${output.scan.mode}-${sha256(`${output.project.project_id}\n${candidateKeys}`).slice(0, 12)}`;
+function buildDiscoveryRunId(summary, findingsPayload) {
+  const generatedAt = summary.generated_at.replace(/[-:.TZ]/g, '').slice(0, 17);
+  const findingKeys = allDiscoveryFindings(findingsPayload.findings).map((finding) => finding.finding_id).sort().join('\n');
+  return `${generatedAt}-${summary.scan.mode}-${sha256(`${summary.project.project_id}\n${findingKeys}`).slice(0, 12)}`;
 }
 
-function discoveryRunFilePaths(context, output) {
-  const runId = buildDiscoveryRunId(output);
+function discoveryRunFilePaths(context, summary, findingsPayload) {
+  const runId = buildDiscoveryRunId(summary, findingsPayload);
   const runDirectory = path.join(context.projectDir, 'runs', runId);
   return {
     run_id: runId,
     run_directory: runDirectory,
-    candidates_path: path.join(runDirectory, 'candidates.json'),
-    review_pack_path: path.join(runDirectory, 'review-pack.md'),
-    decisions_template_path: path.join(runDirectory, 'decisions.template.json'),
+    findings_path: path.join(runDirectory, 'findings.json'),
+    finding_index_path: path.join(runDirectory, 'finding-index.json'),
+    finding_manifest_path: path.join(runDirectory, 'finding-manifest.json'),
+    compatibility_candidates_path: path.join(runDirectory, 'compat-candidates.json'),
   };
 }
 
@@ -2375,212 +3138,56 @@ function sourceAnchorText(anchor) {
   return anchor?.text ?? 'n/a';
 }
 
-function javaPackageName(candidate) {
-  if (candidate.language !== 'java' || !candidate.qualified_name || !candidate.name) {
-    return null;
-  }
-  const suffix = `.${candidate.name}`;
-  return candidate.qualified_name.endsWith(suffix)
-    ? candidate.qualified_name.slice(0, -suffix.length)
-    : null;
-}
-
-function readAnchorSnippet(rootPath, anchor) {
-  if (!anchor?.path || !Number.isInteger(anchor.line)) {
-    return null;
-  }
-
-  const absolutePath = path.resolve(rootPath, anchor.path);
-  if (!isInsideRoot(rootPath, absolutePath) || !fs.existsSync(absolutePath)) {
-    return null;
-  }
-
-  const lines = fs.readFileSync(absolutePath, 'utf8').split(/\r?\n/);
-  const startIndex = Math.max(0, anchor.line - 1);
-  const snippet = lines
-    .slice(startIndex, startIndex + REVIEW_SNIPPET_LINE_COUNT)
-    .map((line) => line.trimEnd())
-    .join('\n')
-    .trim();
-
-  return truncateText(snippet, MAX_REVIEW_SNIPPET_CHARS);
-}
-
-function markdownSnippet(rootPath, language, anchor) {
-  const snippet = readAnchorSnippet(rootPath, anchor);
-  if (!snippet) {
-    return null;
-  }
-
-  return `\`\`\`${language ?? ''}\n${snippet}\n\`\`\``;
-}
-
-function renderUtilityArtifactReviewPack(output, lines) {
-  lines.push('## Utility Artifacts');
-  if (output.candidates.utility_artifacts.length === 0) {
-    lines.push('', '- None detected.');
-    return;
-  }
-
-  for (const candidate of output.candidates.utility_artifacts) {
-    lines.push('', `### ${candidate.name}`);
-    lines.push(`- Candidate: \`${candidate.candidate_id}\``);
-    lines.push(`- Path: \`${candidate.source_anchor?.path ?? 'n/a'}\``);
-    lines.push(`- Anchor: \`${sourceAnchorText(candidate.source_anchor)}\``);
-    if (candidate.qualified_name) {
-      lines.push(`- Qualified name: \`${candidate.qualified_name}\``);
-    }
-    const packageName = javaPackageName(candidate);
-    if (packageName) {
-      lines.push(`- Package: \`${packageName}\``);
-    }
-    lines.push(`- Language: \`${candidate.language}\``);
-    lines.push(`- Artifact type: \`${candidate.artifact_type}\``);
-    if (candidate.module_path) {
-      lines.push(`- Module path: \`${candidate.module_path}\``);
-    }
-    lines.push('', '#### Members');
-    if (candidate.members.length === 0) {
-      lines.push('', '- None detected.');
-      continue;
-    }
-    for (const member of candidate.members) {
-      lines.push('', `- \`${member.name}\``);
-      lines.push(`  - Member key: \`${member.member_key}\``);
-      lines.push(`  - Type: \`${member.member_type}\``);
-      lines.push(`  - Signature: \`${member.signature}\``);
-      lines.push(`  - Anchor: \`${sourceAnchorText(member.source_anchor)}\``);
-      const snippet = markdownSnippet(output.project.root_path, candidate.language, member.source_anchor);
-      if (snippet) {
-        lines.push('  - Snippet:');
-        lines.push(indentMarkdown(snippet, '    '));
-      }
-    }
-  }
-}
-
-function renderObservedExternalUsageReviewPack(output, lines) {
-  lines.push('', '## Observed External Usages');
-  if (output.candidates.observed_external_usages.length === 0) {
-    lines.push('', '- None detected.');
-    return;
-  }
-
-  for (const candidate of output.candidates.observed_external_usages) {
-    lines.push('', `### ${candidate.origin_key}`);
-    lines.push(`- Candidate: \`${candidate.candidate_id}\``);
-    lines.push(`- Import anchor: \`${sourceAnchorText(candidate.source_anchor)}\``);
-    lines.push(`- Import text: \`${candidate.import_text}\``);
-    if (candidate.call_anchor) {
-      lines.push(`- Call anchor: \`${sourceAnchorText(candidate.call_anchor)}\``);
-    }
-    if (candidate.call_text) {
-      lines.push(`- Call text: \`${candidate.call_text}\``);
-    }
-    lines.push(`- Language: \`${candidate.language}\``);
-    if (candidate.framework) {
-      lines.push(`- Framework: \`${candidate.framework}\``);
-    }
-  }
-}
-
-function renderTemplatePatternReviewPack(output, lines) {
-  lines.push('', '## Template Patterns');
-  if (output.candidates.template_patterns.length === 0) {
-    lines.push('', '- None detected.');
-    return;
-  }
-
-  for (const candidate of output.candidates.template_patterns) {
-    lines.push('', `### ${candidate.pattern_key}`);
-    lines.push(`- Candidate: \`${candidate.candidate_id}\``);
-    lines.push(`- Pattern key: \`${candidate.pattern_key}\``);
-    lines.push(`- Name: \`${candidate.name}\``);
-    lines.push(`- Language: \`${candidate.language ?? 'mixed'}\``);
-    if (candidate.framework) {
-      lines.push(`- Framework: \`${candidate.framework}\``);
-    }
-    lines.push(`- Instance count: ${candidate.instance_count}`);
-    lines.push(`- Threshold: ${candidate.threshold}`);
-    lines.push('', '#### Representative Instances');
-    for (const instance of candidate.instances) {
-      lines.push('', `- Anchor: \`${sourceAnchorText(instance.source_anchor)}\``);
-      if (instance.module_path) {
-        lines.push(`  - Module path: \`${instance.module_path}\``);
-      }
-      const snippet = markdownSnippet(output.project.root_path, candidate.language, instance.source_anchor);
-      if (snippet) {
-        lines.push('  - Snippet:');
-        lines.push(indentMarkdown(snippet, '    '));
-      } else if (instance.snippet) {
-        lines.push(`  - Snippet: \`${truncateText(instance.snippet, MAX_REVIEW_SNIPPET_CHARS)}\``);
-      }
-    }
-  }
-}
-
-function indentMarkdown(text, prefix) {
-  return text.split('\n').map((line) => `${prefix}${line}`).join('\n');
-}
-
-function renderDiscoveryReviewPack(output) {
-  const lines = [
-    '# Discovery Review Pack',
-    '',
-    `Project: \`${output.project.project_id}\``,
-    `Root: \`${output.project.root_path}\``,
-    `Mode: \`${output.scan.mode}\``,
-    `Generated: \`${output.generated_at}\``,
-    `Files scanned: ${output.scan.files_scanned}`,
-    '',
-    '## Run Files',
-    '',
-    `- Candidates JSON: \`${output.run_files.candidates_path}\``,
-    `- Decision template: \`${output.run_files.decisions_template_path}\``,
-    '',
-  ];
-
-  // Review Pack 只呈现结构事实；标签、取舍和接受/忽略决策由 Discovery Skill agent 负责。
-  renderUtilityArtifactReviewPack(output, lines);
-  renderObservedExternalUsageReviewPack(output, lines);
-  renderTemplatePatternReviewPack(output, lines);
-
-  return `${lines.join('\n')}\n`;
-}
-
-function buildDecisionTemplate(output) {
-  const decisions = Object.fromEntries(allDiscoveryCandidates(output).map((candidate) => [
-    candidate.candidate_id,
-    {
-      action: 'review',
-      reason: '',
-    },
-  ]));
-
+function buildFindingManifest(summary, runFiles) {
   return {
-    kind: 'tool_catalog_discovery_decision_template',
+    kind: 'tool_catalog_discovery_finding_manifest',
     version: 1,
-    generated_at: output.generated_at,
-    scan: output.scan,
-    run_files: output.run_files,
-    candidates: output.candidates,
-    decisions,
-  };
-}
-
-function writeDiscoveryRunFiles(context, output) {
-  const runFiles = discoveryRunFilePaths(context, output);
-  const outputWithRunFiles = {
-    ...output,
+    generated_at: summary.generated_at,
+    dry_run: true,
+    index_mutated: false,
+    project: {
+      project_id: summary.project.project_id,
+      root_path: summary.project.root_path,
+      catalog_path: summary.project.catalog_path,
+    },
+    scan: {
+      mode: summary.scan.mode,
+      scan_source: summary.scan.scan_source,
+      files_scanned: summary.scan.files_scanned,
+      files_in_scope: summary.scan.files_in_scope,
+      changed_paths: summary.scan.changed_paths,
+    },
+    finding_counts: summary.finding_counts,
+    mechanical_dedupe: summary.mechanical_dedupe,
+    preclassification: summary.preclassification,
     run_files: runFiles,
   };
+}
+
+function writeDiscoveryRunFiles(context, draft) {
+  const runFiles = discoveryRunFilePaths(context, draft.summary, draft.findings_payload);
+  const output = {
+    ...draft.summary,
+    run_files: runFiles,
+  };
+  const manifest = buildFindingManifest(output, runFiles);
 
   fs.mkdirSync(runFiles.run_directory, { recursive: true });
-  writeJsonRunFile(runFiles.candidates_path, outputWithRunFiles);
-  fs.writeFileSync(runFiles.review_pack_path, renderDiscoveryReviewPack(outputWithRunFiles), 'utf8');
-  writeJsonRunFile(runFiles.decisions_template_path, buildDecisionTemplate(outputWithRunFiles));
+  writeJsonRunFile(runFiles.findings_path, {
+    ...draft.findings_payload,
+    run_files: runFiles,
+  });
+  writeJsonRunFile(runFiles.finding_index_path, {
+    ...draft.finding_index_payload,
+    run_files: runFiles,
+  });
+  writeJsonRunFile(runFiles.finding_manifest_path, manifest);
+  writeJsonRunFile(runFiles.compatibility_candidates_path, {
+    ...draft.compatibility_payload,
+    run_files: runFiles,
+  });
 
-  return outputWithRunFiles;
+  return output;
 }
 
 function renderDiscoveryMarkdown(output) {
@@ -2593,22 +3200,44 @@ function renderDiscoveryMarkdown(output) {
     `Files: ${output.scan.files_scanned} scanned from ${output.scan.files_in_scope} in-scope ${pluralize(output.scan.files_in_scope, 'file')}.`,
     `Index mutated: \`${output.index_mutated}\``,
     '',
-    '## Candidate Counts',
+    '## Finding Counts',
     '',
-    `- Utility artifacts: ${output.candidates.utility_artifacts.length}`,
-    `- Observed external usages: ${output.candidates.observed_external_usages.length}`,
-    `- Template patterns: ${output.candidates.template_patterns.length}`,
+    `- Utility artifacts: ${output.finding_counts.utility_artifacts}`,
+    `- Observed external usages: ${output.finding_counts.observed_external_usages}`,
+    `- Template patterns: ${output.finding_counts.template_patterns}`,
+    `- Total findings: ${output.finding_counts.total}`,
+    '',
+    '## Mechanical Dedupe',
+    '',
+    `- Input findings: ${output.mechanical_dedupe.input_total}`,
+    `- Kept findings: ${output.mechanical_dedupe.kept_total}`,
+    `- Removed duplicates: ${output.mechanical_dedupe.removed_total}`,
+    `- Duplicate groups: ${output.mechanical_dedupe.duplicate_groups}`,
+    '',
+    '## Preclassification',
+    '',
+    `- Index state: \`${output.preclassification.index.status}\``,
+    `- Review queue: ${output.preclassification.finding_counts.review_queue}`,
+    `- New findings: ${output.preclassification.finding_counts.new}`,
+    `- Unchanged catalog entries: ${output.preclassification.finding_counts.unchanged_catalog_entries}`,
+    `- Unchanged suppressions: ${output.preclassification.finding_counts.unchanged_suppressions}`,
+    `- Unchanged deferrals: ${output.preclassification.finding_counts.unchanged_deferrals}`,
+    `- Reopened catalog entries: ${output.preclassification.finding_counts.reopened_catalog_entries}`,
+    `- Reopened suppressions: ${output.preclassification.finding_counts.reopened_suppressions}`,
+    `- Reopened deferrals: ${output.preclassification.finding_counts.reopened_deferrals}`,
+    `- Cleanup records: ${output.preclassification.cleanup_counts.total}`,
+    `- Missing-source records: ${output.preclassification.cleanup_counts.missing_source_records}`,
     '',
     '## Run Files',
     '',
-    `- Candidates JSON: \`${output.run_files.candidates_path}\``,
-    `- Discovery Review Pack: \`${output.run_files.review_pack_path}\``,
-    `- Decision template: \`${output.run_files.decisions_template_path}\``,
+    `- Raw Findings: \`${output.run_files.findings_path}\``,
+    `- Finding Index: \`${output.run_files.finding_index_path}\``,
+    `- Finding Manifest: \`${output.run_files.finding_manifest_path}\``,
     '',
     '## Next Steps',
     '',
-    '- Read the Discovery Review Pack first; use candidate JSON only for audit, debugging, or validation.',
-    '- Write reviewed accept, ignore, and defer decisions before running `tool-catalog discover --apply <decisions.json>`.',
+    '- Read the Finding Index first to shard review work without loading the full findings file.',
+    '- Use raw Findings and the Finding Manifest as evidence harvest inputs for later review/finalization stages.',
   ];
 
   lines.push('', '## Scan Notes');
@@ -2758,18 +3387,80 @@ function collectAcceptedEntryArray(value, groupName, entries) {
   if (!value) {
     return;
   }
-  if (!Array.isArray(value)) {
-    throw new ToolCatalogError(`Discovery decisions field '${groupName}' must be an array.`, 2);
+  const impliedType = candidateTypeForGroup(groupName);
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!isPlainObject(entry)) {
+        throw new ToolCatalogError(`Accepted entry in '${groupName}' must be an object.`, 2);
+      }
+      entries.push({
+        ...entry,
+        candidate_type: entry.candidate_type ?? entry.entry_type ?? impliedType,
+      });
+    }
+    return;
   }
 
-  const impliedType = candidateTypeForGroup(groupName);
-  for (const entry of value) {
+  if (!isPlainObject(value)) {
+    throw new ToolCatalogError(`Discovery decisions field '${groupName}' must be an array or object map.`, 2);
+  }
+
+  for (const [entryKey, entry] of Object.entries(value)) {
     if (!isPlainObject(entry)) {
-      throw new ToolCatalogError(`Accepted entry in '${groupName}' must be an object.`, 2);
+      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' must be an object.`, 2);
     }
+
+    const selectorMatch = entryKey.match(/^(artifact|template|external):(.*)$/);
+    const selectorType = selectorMatch?.[1] === 'artifact'
+      ? 'utility_artifact'
+      : selectorMatch?.[1] === 'template'
+        ? 'template_pattern'
+        : selectorMatch?.[1] === 'external'
+          ? 'observed_external_usage'
+          : null;
+    const keyIdentity = selectorMatch?.[2] ?? entryKey;
+    const candidateType = entry.candidate_type
+      ?? entry.entry_type
+      ?? selectorType
+      ?? (Object.hasOwn(entry, 'artifact_key')
+        ? 'utility_artifact'
+        : Object.hasOwn(entry, 'pattern_key')
+          ? 'template_pattern'
+          : Object.hasOwn(entry, 'usage_key')
+            ? 'observed_external_usage'
+            : impliedType);
+
+    if (!candidateType) {
+      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' must include candidate_type, entry_type, or a typed key prefix.`, 2);
+    }
+    if (selectorType && selectorType !== candidateType) {
+      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' uses selector type '${selectorType}' but declares candidate_type '${candidateType}'.`, 2);
+    }
+
+    const identityField = candidateType === 'utility_artifact'
+      ? 'artifact_key'
+      : candidateType === 'template_pattern'
+        ? 'pattern_key'
+        : candidateType === 'observed_external_usage'
+          ? 'usage_key'
+          : null;
+    if (!identityField) {
+      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' has unsupported candidate_type '${candidateType}'.`, 2);
+    }
+
+    // 键控 accepted entry 的映射键就是最终 identity，payload 内同名字段只能显式重复，不能改写。
+    const payloadIdentity = normalizeNullableString(entry[identityField]);
+    if (payloadIdentity && payloadIdentity !== keyIdentity) {
+      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' must keep ${identityField} aligned with the map key '${keyIdentity}', received '${payloadIdentity}'.`, 2);
+    }
+
     entries.push({
       ...entry,
-      candidate_type: entry.candidate_type ?? entry.entry_type ?? impliedType,
+      candidate_type: candidateType,
+      artifact_key: candidateType === 'utility_artifact' ? keyIdentity : entry.artifact_key,
+      pattern_key: candidateType === 'template_pattern' ? keyIdentity : entry.pattern_key,
+      usage_key: candidateType === 'observed_external_usage' ? keyIdentity : entry.usage_key,
     });
   }
 }
@@ -3112,6 +3803,7 @@ function normalizeUtilityArtifact(candidate) {
     limitations: truncateText(candidate.limitations, MAX_SUMMARY_CHARS),
     capabilityTags: normalizeCapabilityTags(candidate.capability_tags ?? candidate.tags, `Accepted utility artifact ${candidate.candidate_id} capability_tags`),
     snippet: truncateText(candidate.snippet, MAX_SNIPPET_CHARS),
+    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
   };
   const members = Array.isArray(candidate.members) ? aggregateUtilityMembers(candidate.members, artifact) : [];
   if (members.length === 0) {
@@ -3157,6 +3849,7 @@ function normalizeTemplatePattern(candidate) {
     limitations: truncateText(candidate.limitations, MAX_SUMMARY_CHARS),
     capabilityTags: normalizeCapabilityTags(candidate.capability_tags ?? candidate.tags, `Accepted template pattern ${candidate.candidate_id} capability_tags`),
     snippet: truncateText(candidate.snippet, MAX_SNIPPET_CHARS),
+    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
   };
   const instances = Array.isArray(candidate.instances) ? candidate.instances.map((instance) => normalizeTemplateInstance(instance, pattern)) : [];
   if (instances.length === 0) {
@@ -3193,6 +3886,7 @@ function normalizeObservedExternalUsage(candidate) {
     sourceAnchor,
     importText: truncateText(candidate.import_text, MAX_SNIPPET_CHARS),
     callText: truncateText(candidate.call_text, MAX_SNIPPET_CHARS),
+    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
   };
 }
 
@@ -3223,6 +3917,7 @@ function normalizeIgnoredCandidate(candidate) {
       ?? (candidateType === 'template_pattern' ? candidateId.replace(/^template-pattern:/, '') : null),
     usageKey: normalizeNullableString(candidate.usage_key ?? candidate.candidate_id),
     sourceAnchor,
+    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
     reason: truncateText(candidate.reason ?? candidate.ignore_reason ?? 'Ignored by discovery apply decision.', MAX_SUMMARY_CHARS),
   };
 }
@@ -3240,6 +3935,7 @@ function normalizeDeferredCandidate(candidate) {
       ?? (candidateType === 'template_pattern' ? candidateId.replace(/^template-pattern:/, '') : null),
     usageKey: normalizeNullableString(candidate.usage_key ?? candidate.candidate_id),
     sourceAnchor,
+    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
     reason: truncateText(candidate.reason ?? candidate.defer_reason ?? candidate.question ?? 'Deferred by discovery apply decision.', MAX_SUMMARY_CHARS),
   };
 }
@@ -3995,6 +4691,53 @@ INSERT INTO deferred_candidates (
 `;
 }
 
+function discoveryFingerprintSql(projectId, record) {
+  return `
+INSERT INTO discovery_fingerprints (
+  project_id, record_family, record_kind, record_key, source_anchor, source_paths, match_keys, structural_fingerprint, fingerprint_algorithm, updated_at
+) VALUES (
+  ${sqlString(projectId)},
+  ${sqlString(record.recordFamily)},
+  ${sqlString(record.recordKind)},
+  ${sqlString(record.recordKey)},
+  ${sourceAnchorSql(record.sourceAnchor)},
+  ${sqlString(JSON.stringify(record.sourcePaths))},
+  ${sqlString(JSON.stringify(record.matchKeys))},
+  ${sqlString(record.structuralFingerprint)},
+  ${sqlString(record.fingerprintAlgorithm)},
+  datetime('now')
+) ON CONFLICT(project_id, record_family, record_kind, record_key) DO UPDATE SET
+  source_anchor = excluded.source_anchor,
+  source_paths = excluded.source_paths,
+  match_keys = excluded.match_keys,
+  structural_fingerprint = excluded.structural_fingerprint,
+  fingerprint_algorithm = excluded.fingerprint_algorithm,
+  updated_at = datetime('now');
+`;
+}
+
+function buildPersistedDiscoveryRecords(decisions) {
+  const records = [];
+
+  for (const artifact of decisions.acceptedUtilities) {
+    records.push(persistedDiscoveryRecord('catalog_entry', 'utility_artifact', artifact.artifactKey, utilityArtifactToFindingRecord(artifact), artifact.discoveryFingerprint));
+  }
+  for (const pattern of decisions.acceptedTemplates) {
+    records.push(persistedDiscoveryRecord('catalog_entry', 'template_pattern', pattern.patternKey, templatePatternToFindingRecord(pattern), pattern.discoveryFingerprint));
+  }
+  for (const usage of decisions.acceptedExternalUsages) {
+    records.push(persistedDiscoveryRecord('catalog_entry', 'observed_external_usage', usage.usageKey, externalUsageToFindingRecord(usage), usage.discoveryFingerprint));
+  }
+  for (const ignored of decisions.ignoredCandidates) {
+    records.push(persistedDiscoveryRecord('suppression', ignored.candidateType, ignored.candidateId, traceDecisionToFindingRecord(ignored), ignored.discoveryFingerprint));
+  }
+  for (const deferred of decisions.deferredCandidates) {
+    records.push(persistedDiscoveryRecord('deferral', deferred.candidateType, deferred.candidateId, traceDecisionToFindingRecord(deferred), deferred.discoveryFingerprint));
+  }
+
+  return records;
+}
+
 function cleanupDecisionTraceSql(projectId, decisions) {
   if (decisions.requiredDecisions.length > 0) {
     return '';
@@ -4007,6 +4750,9 @@ DELETE FROM ignored_candidates
 WHERE project_id = ${sqlString(projectId)};
 DELETE FROM deferred_candidates
 WHERE project_id = ${sqlString(projectId)};
+DELETE FROM discovery_fingerprints
+WHERE project_id = ${sqlString(projectId)}
+  AND record_family IN ('suppression', 'deferral');
 `;
   }
 
@@ -4017,6 +4763,10 @@ WHERE project_id = ${sqlString(projectId)}
 DELETE FROM deferred_candidates
 WHERE project_id = ${sqlString(projectId)}
   AND ${traceScope};
+DELETE FROM discovery_fingerprints
+WHERE project_id = ${sqlString(projectId)}
+  AND record_family IN ('suppression', 'deferral')
+  AND ${pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope)};
 `;
 }
 
@@ -4097,6 +4847,9 @@ function cleanupCatalogSql(projectId, decisions) {
   const artifactKeep = protectedArtifacts ? `AND artifact_key NOT IN (${protectedArtifacts})` : '';
   const templateKeep = protectedTemplates ? `AND pattern_key NOT IN (${protectedTemplates})` : '';
   const usageKeep = protectedUsages ? `AND usage_key NOT IN (${protectedUsages})` : '';
+  const artifactFingerprintKeep = protectedArtifacts ? `AND record_key NOT IN (${protectedArtifacts})` : '';
+  const templateFingerprintKeep = protectedTemplates ? `AND record_key NOT IN (${protectedTemplates})` : '';
+  const usageFingerprintKeep = protectedUsages ? `AND record_key NOT IN (${protectedUsages})` : '';
   const instanceKeep = acceptedInstanceAnchors ? `AND source_anchor NOT IN (${acceptedInstanceAnchors})` : '';
 
   if (decisions.scope.mode === 'full') {
@@ -4149,6 +4902,13 @@ WHERE project_id = ${sqlString(projectId)}
 DELETE FROM observed_external_usages
 WHERE project_id = ${sqlString(projectId)}
   ${usageKeep};
+DELETE FROM discovery_fingerprints
+WHERE project_id = ${sqlString(projectId)}
+  AND (
+    (record_family = 'catalog_entry' AND record_kind = 'utility_artifact' ${protectedArtifacts ? `AND record_key NOT IN (${protectedArtifacts})` : ''})
+    OR (record_family = 'catalog_entry' AND record_kind = 'template_pattern' ${protectedTemplates ? `AND record_key NOT IN (${protectedTemplates})` : ''})
+    OR (record_family = 'catalog_entry' AND record_kind = 'observed_external_usage' ${protectedUsages ? `AND record_key NOT IN (${protectedUsages})` : ''})
+  );
 `;
   }
 
@@ -4281,6 +5041,14 @@ DELETE FROM observed_external_usages
 WHERE project_id = ${sqlString(projectId)}
   AND ${externalScope}
   ${usageKeep};
+DELETE FROM discovery_fingerprints
+WHERE project_id = ${sqlString(projectId)}
+  AND record_family = 'catalog_entry'
+  AND (
+    (record_kind = 'utility_artifact' AND ${artifactScope} ${artifactFingerprintKeep})
+    OR (record_kind = 'template_pattern' AND ${instanceScope} ${templateFingerprintKeep})
+    OR (record_kind = 'observed_external_usage' AND ${externalScope} ${usageFingerprintKeep})
+  );
 `;
 }
 
@@ -4309,6 +5077,9 @@ function buildDiscoveryApplySql(context, decisions) {
     statements.push(deferredCandidateSql(context.projectId, deferred));
   }
   statements.push(cleanupCatalogSql(context.projectId, decisions));
+  for (const record of buildPersistedDiscoveryRecords(decisions)) {
+    statements.push(discoveryFingerprintSql(context.projectId, record));
+  }
 
   return statements.filter((statement) => statement.trim()).join('\n');
 }

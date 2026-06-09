@@ -24,6 +24,16 @@ const toolCatalogSkills = [
   'tool-catalog-consult',
 ];
 
+const discoveryTerminologyDocs = [
+  'docs/adr/0034-store-discovery-run-files-in-user-cache.md',
+  'docs/agent-orchestrated-discovery-workflow.md',
+];
+
+const disallowedDiscoveryArtifactPhrases = [
+  /\bDiscovery candidate data\b/i,
+  /\bfull candidate data\b/i,
+];
+
 const documentedCommands = [
   'tool-catalog doctor',
   'tool-catalog config project-id <id>',
@@ -75,6 +85,23 @@ function assertIncludes(text, expected, label) {
   );
 }
 
+function assertOrderedIncludes(text, expectedEntries, label) {
+  let previousIndex = -1;
+  for (const expected of expectedEntries) {
+    const index = text.indexOf(expected);
+    assert(index >= 0, `${label} must include ${expected}`);
+    assert(index > previousIndex, `${label} must keep ${expected} after the previous required stage`);
+    previousIndex = index;
+  }
+}
+
+function assertExcludes(text, pattern, label, message) {
+  assert(
+    !pattern.test(text),
+    `${label} ${message}`,
+  );
+}
+
 function checkSkillFrontmatter() {
   for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) {
@@ -93,6 +120,7 @@ function checkSkillFrontmatter() {
 function checkToolCatalogSkillDocs() {
   const discover = readFileSync(path.join(skillsDir, 'tool-catalog-discover/SKILL.md'), 'utf8');
   const consult = readFileSync(path.join(skillsDir, 'tool-catalog-consult/SKILL.md'), 'utf8');
+  const workflow = readFileSync(path.join(repoRoot, 'docs/agent-orchestrated-discovery-workflow.md'), 'utf8');
 
   for (const skillName of toolCatalogSkills) {
     const text = readFileSync(path.join(skillsDir, skillName, 'SKILL.md'), 'utf8');
@@ -108,14 +136,276 @@ function checkToolCatalogSkillDocs() {
     'discover --changed <paths...> --dry-run',
     'discover --apply <decisions.json>',
     'two-phase Tool Catalog CLI workflow',
-    'Discovery Review Pack',
+    'durable run directory',
+    'The main agent is the only dispatcher.',
+    '`model` and `reasoning_effort`',
+    'workers must not spawn subagents',
+    'strict Markdown work plans',
+    '`work_item_id`',
+    '`role`',
+    '`depends_on`',
+    '`brief`',
+    '`inputs`',
+    '`outputs`',
+    '`coverage`',
+    'Minimal `status.md`',
+    '`terminal_status`',
+    '`outcome`',
+    '`artifacts`',
+    '`readiness`',
+    '`next_worker`',
     'Discovery Decision File',
-    'Capability Tags',
-    'Selection Descriptions',
     'relative source anchors',
+    'Narrative reports are not required.',
+    'Evidence Harvest Worker',
+    'Shard Planner Worker',
+    'Chunk Planner Worker',
+    'Shard Review Worker',
+    'Shard Aggregator Worker',
+    'Cross-Shard Merge Worker',
+    'Catalog Finalizer Worker',
+    'Decision Review Worker',
+    'Finalizer Repair Worker',
+    'Decision Incorporation Worker',
+    'Apply/Verify Worker',
+    'bounded worker inputs',
+    'coverage accounting',
+    'missing or duplicate Finding coverage',
+    'validate local anchors',
+    'accept/ignore/defer',
+    'semantic tags',
+    'usage notes',
+    'duplicate suggestions',
+    'every Review Group considered for acceptance',
+    'must not modify the Discovery Decision File',
+    'blocking decision needed',
+    'review-only mode',
   ]) {
     assertIncludes(discover, expected, 'tool-catalog-discover');
   }
+
+  assertIncludes(
+    discover,
+    'Every work plan must include these fields exactly once per work item: `work_item_id`, `role`, `depends_on`, `brief`, `inputs`, `outputs`, and `coverage`.',
+    'tool-catalog-discover work plan contract',
+  );
+  assertIncludes(
+    discover,
+    '`status.md` must record `terminal_status`, `outcome`, `artifacts`, `readiness`, and `next_worker`.',
+    'tool-catalog-discover status contract',
+  );
+  assertIncludes(
+    discover,
+    '`terminal_status` is one of `completed`, `failed`, or `blocked`.',
+    'tool-catalog-discover terminal status values',
+  );
+  assertIncludes(
+    discover,
+    'The oversized planning chain is fixed: harvest manifest/index -> Shard Planner -> Chunk Planner when a shard stays oversized -> bounded shard/chunk review inputs -> Shard Aggregator -> Cross-Shard Merge.',
+    'tool-catalog-discover oversized planning chain',
+  );
+  assertIncludes(
+    discover,
+    'route any oversized shard to a Chunk Planner Worker instead of one oversized prompt.',
+    'tool-catalog-discover shard planner handoff',
+  );
+  assertIncludes(
+    discover,
+    'recursively split one oversized shard into bounded child work items',
+    'tool-catalog-discover chunk recursion contract',
+  );
+  assertIncludes(
+    discover,
+    'merge reviewed chunks back into one shard artifact',
+    'tool-catalog-discover shard aggregation contract',
+  );
+  assertIncludes(
+    discover,
+    'fail the shard if `coverage` shows missing or duplicate Finding coverage.',
+    'tool-catalog-discover coverage gate',
+  );
+  assertIncludes(
+    discover,
+    'run mandatory local gap audit for every Review Group considered for acceptance',
+    'tool-catalog-discover local gap audit gate',
+  );
+  assertIncludes(
+    discover,
+    'must not modify the Discovery Decision File',
+    'tool-catalog-discover decision review immutability',
+  );
+  assertIncludes(
+    discover,
+    'send the run back to the Decision Review Worker',
+    'tool-catalog-discover repair re-review loop',
+  );
+  assertIncludes(
+    discover,
+    'after explicit user direction on blocking findings, incorporate that decision into the Discovery Decision File and return the run to the Decision Review Worker.',
+    'tool-catalog-discover user decision incorporation loop',
+  );
+  assertIncludes(
+    discover,
+    'run by default only after the Decision Review Worker passes with no blockers, unless the user explicitly requested review-only mode',
+    'tool-catalog-discover apply default gate',
+  );
+  assertOrderedIncludes(
+    discover,
+    [
+      'Evidence Harvest Worker:',
+      'Shard Planner Worker:',
+      'Chunk Planner Worker:',
+      'Shard Review Worker:',
+      'Shard Aggregator Worker:',
+      'Cross-Shard Merge Worker:',
+      'Catalog Finalizer Worker:',
+      'Decision Review Worker:',
+      'Finalizer Repair Worker:',
+      'Decision Incorporation Worker:',
+      'Apply/Verify Worker:',
+    ],
+    'tool-catalog-discover worker flow',
+  );
+
+  assertExcludes(
+    discover,
+    /\bcandidate(s)?\b/i,
+    'tool-catalog-discover',
+    'must not use superseded candidate-centric discovery wording',
+  );
+
+  for (const relativePath of discoveryTerminologyDocs) {
+    const documentText = readFileSync(path.join(repoRoot, relativePath), 'utf8');
+    for (const pattern of disallowedDiscoveryArtifactPhrases) {
+      assertExcludes(
+        documentText,
+        pattern,
+        relativePath,
+        'must not use superseded candidate-centric discovery artifact wording',
+      );
+    }
+  }
+
+  assertOrderedIncludes(
+    workflow,
+    [
+      '-> Evidence Harvest',
+      '-> Shard Planner Workers',
+      '-> Chunk Planner Workers',
+      '-> Shard Review Workers',
+      '-> Shard Aggregator Workers',
+      '-> Cross-Shard Merge Workers',
+      '-> Catalog Finalizer Workers',
+      '-> Decision Review Worker',
+      '-> Apply/Verify Worker',
+    ],
+    'agent-orchestrated discovery workflow DAG',
+  );
+  assertIncludes(
+    workflow,
+    'The main agent is the only dispatcher.',
+    'agent-orchestrated discovery workflow main-agent-only dispatch',
+  );
+  assertIncludes(
+    workflow,
+    'Workers must not spawn subagents.',
+    'agent-orchestrated discovery workflow worker dispatch boundary',
+  );
+  assertIncludes(
+    workflow,
+    'Workers may write work plans, child briefs, structured artifacts, and minimal status files.',
+    'agent-orchestrated discovery workflow worker artifact boundary',
+  );
+  assertIncludes(
+    workflow,
+    'Every shard or chunk work item must include `work_item_id`, `role`, `depends_on`, `brief`, `inputs`, `outputs`, and `coverage` exactly once.',
+    'agent-orchestrated discovery workflow work plan contract',
+  );
+  assertIncludes(
+    workflow,
+    'Oversized dry-runs must be planned as `harvest manifest/index -> Shard Planner -> Chunk Planner when a shard stays oversized -> bounded shard/chunk review inputs -> Shard Aggregator -> Cross-Shard Merge`; they must not be handed to one oversized worker prompt.',
+    'agent-orchestrated discovery workflow oversized planning chain',
+  );
+  assertIncludes(
+    workflow,
+    'Chunk Planner Workers recurse only by emitting smaller bounded child work items for the same shard.',
+    'agent-orchestrated discovery workflow chunk recursion contract',
+  );
+  assertIncludes(
+    workflow,
+    'Must not emit semantic accept/reject/defer decisions.',
+    'agent-orchestrated discovery workflow shard review decision boundary',
+  );
+  assertIncludes(
+    workflow,
+    'Must not write Catalog Entries, Suppressions, Deferrals, or final prose fields.',
+    'agent-orchestrated discovery workflow shard review semantic boundary',
+  );
+  assertIncludes(
+    workflow,
+    'Block downstream handoff when coverage accounting shows missing or duplicate Finding coverage.',
+    'agent-orchestrated discovery workflow coverage gate',
+  );
+  assertIncludes(
+    workflow,
+    'Consume shard aggregates only; they must not read oversized raw harvest payloads directly.',
+    'agent-orchestrated discovery workflow shard merge boundary',
+  );
+  assertIncludes(
+    workflow,
+    'Perform mandatory local gap audit for every Review Group considered for acceptance before finalizing decisions.',
+    'agent-orchestrated discovery workflow finalizer gap audit gate',
+  );
+  assertIncludes(
+    workflow,
+    'Own source inspection, semantic decisions, suppressions, deferrals, and Discovery Decision File generation.',
+    'agent-orchestrated discovery workflow finalizer responsibilities',
+  );
+  assertIncludes(
+    workflow,
+    'Must not modify the Discovery Decision File.',
+    'agent-orchestrated discovery workflow decision review immutability',
+  );
+  assertIncludes(
+    workflow,
+    'Returns one of three outcomes:',
+    'agent-orchestrated discovery workflow decision review outcomes',
+  );
+  assertIncludes(
+    workflow,
+    'Pass: continue to apply unless the user requested review-only mode.',
+    'agent-orchestrated discovery workflow pass outcome',
+  );
+  assertIncludes(
+    workflow,
+    'Repair needed: send concrete defects to a Finalizer Repair Worker, then re-run review.',
+    'agent-orchestrated discovery workflow repair outcome',
+  );
+  assertIncludes(
+    workflow,
+    'Blocking decision needed: route through explicit user decision, then a Decision Incorporation Worker, before re-review.',
+    'agent-orchestrated discovery workflow blocking outcome',
+  );
+  assertIncludes(
+    workflow,
+    'Repair needed: send concrete defects to a Finalizer Repair Worker, then re-run review.',
+    'agent-orchestrated discovery workflow repair gate',
+  );
+  assertIncludes(
+    workflow,
+    'Blocking decision needed: route through explicit user decision, then a Decision Incorporation Worker, before re-review.',
+    'agent-orchestrated discovery workflow blocking decision gate',
+  );
+  assertIncludes(
+    workflow,
+    '### 7a. Finalizer Repair Worker',
+    'agent-orchestrated discovery workflow finalizer repair section',
+  );
+  assertIncludes(
+    workflow,
+    '### 7b. Decision Incorporation Worker',
+    'agent-orchestrated discovery workflow decision incorporation section',
+  );
 
   for (const expected of [
     'tool-catalog tags --root <project>',

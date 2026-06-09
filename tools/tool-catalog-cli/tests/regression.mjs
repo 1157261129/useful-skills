@@ -158,11 +158,19 @@ const refresh = useDebounceFn(() => {
 `);
 }
 
-function allCandidates(output) {
+function allCompatibilityCandidates(output) {
   return [
     ...output.candidates.utility_artifacts,
     ...output.candidates.observed_external_usages,
     ...output.candidates.template_patterns,
+  ];
+}
+
+function allFindings(output) {
+  return [
+    ...output.findings.utility_artifacts,
+    ...output.findings.observed_external_usages,
+    ...output.findings.template_patterns,
   ];
 }
 
@@ -182,9 +190,9 @@ function assertNotInsidePath(parentPath, childPath, label) {
   );
 }
 
-function findCandidate(items, predicate, label) {
+function findCompatibilityCandidate(items, predicate, label) {
   const found = items.find(predicate);
-  assert(found, `Missing candidate: ${label}`);
+  assert(found, `Missing compatibility projection record: ${label}`);
   return found;
 }
 
@@ -195,18 +203,56 @@ function assertRelativeAnchor(anchor, label) {
   assert(anchor.text.startsWith(`${anchor.path}:`), `Source anchor text must include relative path for ${label}`);
 }
 
-function assertCandidateAnchorsAreRelative(candidate) {
-  if (candidate.source_anchor) {
-    assertRelativeAnchor(candidate.source_anchor, candidate.candidate_id);
+function assertFindingAnchorsAreRelative(finding) {
+  if (finding.source_anchor) {
+    assertRelativeAnchor(finding.source_anchor, finding.finding_id);
   }
-  if (candidate.call_anchor) {
-    assertRelativeAnchor(candidate.call_anchor, `${candidate.candidate_id} call`);
+  if (finding.call_anchor) {
+    assertRelativeAnchor(finding.call_anchor, `${finding.finding_id} call`);
   }
-  for (const member of candidate.members ?? []) {
+  for (const member of finding.members ?? []) {
     assertRelativeAnchor(member.source_anchor, member.member_key);
   }
-  for (const instance of candidate.instances ?? []) {
-    assertRelativeAnchor(instance.source_anchor, candidate.pattern_key);
+  for (const instance of finding.instances ?? []) {
+    assertRelativeAnchor(instance.source_anchor, finding.pattern_key ?? finding.finding_id);
+  }
+}
+
+function loadFindingArtifacts(dryRun) {
+  return {
+    findings: JSON.parse(readFileSync(dryRun.run_files.findings_path, 'utf8')),
+    findingIndex: JSON.parse(readFileSync(dryRun.run_files.finding_index_path, 'utf8')),
+    findingManifest: JSON.parse(readFileSync(dryRun.run_files.finding_manifest_path, 'utf8')),
+    compatibilityProjection: JSON.parse(readFileSync(dryRun.run_files.compatibility_candidates_path, 'utf8')),
+  };
+}
+
+function decorateCompatibilityProjectionWithFingerprints(artifacts) {
+  const decorated = JSON.parse(JSON.stringify(artifacts.compatibilityProjection));
+  const fingerprintsById = new Map(allFindings(artifacts.findings).map((finding) => [finding.finding_id, finding.discovery_fingerprint]));
+  for (const candidate of allCompatibilityCandidates(decorated)) {
+    candidate.discovery_fingerprint = fingerprintsById.get(candidate.candidate_id) ?? null;
+  }
+  return decorated;
+}
+
+function assertNoSemanticFindingFields(finding, label) {
+  for (const forbiddenField of [
+    'action',
+    'decision',
+    'capability_tags',
+    'tags',
+    'summary',
+    'catalog_prose',
+    'description',
+    'usage_notes',
+    'limitations',
+    'suggested_action',
+    'recommended_action',
+    'risk_flags',
+    'risks',
+  ]) {
+    assert(!(forbiddenField in finding), `${label} must not include ${forbiddenField}`);
   }
 }
 
@@ -214,71 +260,61 @@ function assertDiscoveryRunFiles(dryRun, catalogHome, projectRoot, label) {
   assert(dryRun.run_files, `${label} must report dry-run file paths`);
   assertInsidePath(catalogHome, dryRun.run_files.run_directory, `${label} run directory`);
   assertNotInsidePath(projectRoot, dryRun.run_files.run_directory, `${label} run directory`);
+  assert.equal('findings' in dryRun, false, `${label} must not print raw findings inline`);
+  assert.equal('candidates' in dryRun, false, `${label} must not print raw candidates inline`);
 
   for (const [key, filePath] of [
-    ['candidates_path', dryRun.run_files.candidates_path],
-    ['review_pack_path', dryRun.run_files.review_pack_path],
-    ['decisions_template_path', dryRun.run_files.decisions_template_path],
+    ['findings_path', dryRun.run_files.findings_path],
+    ['finding_index_path', dryRun.run_files.finding_index_path],
+    ['finding_manifest_path', dryRun.run_files.finding_manifest_path],
+    ['compatibility_candidates_path', dryRun.run_files.compatibility_candidates_path],
   ]) {
     assertInsidePath(catalogHome, filePath, `${label} ${key}`);
     assertNotInsidePath(projectRoot, filePath, `${label} ${key}`);
     assert(existsSync(filePath), `${label} ${key} must exist: ${filePath}`);
   }
 
-  const candidatesJson = JSON.parse(readFileSync(dryRun.run_files.candidates_path, 'utf8'));
-  assert.equal(candidatesJson.kind, 'tool_catalog_discovery_dry_run');
-  assert.equal(candidatesJson.project.project_id, dryRun.project.project_id);
-  assert.equal(candidatesJson.run_files.review_pack_path, dryRun.run_files.review_pack_path);
+  const artifacts = loadFindingArtifacts(dryRun);
+  assert.equal(artifacts.findings.kind, 'tool_catalog_discovery_findings');
+  assert.equal(artifacts.findingIndex.kind, 'tool_catalog_discovery_finding_index');
+  assert.equal(artifacts.findingManifest.kind, 'tool_catalog_discovery_finding_manifest');
+  assert.equal(artifacts.compatibilityProjection.kind, 'tool_catalog_discovery_candidate_compat');
+  assert.equal(artifacts.findings.project.project_id, dryRun.project.project_id);
+  assert.equal(artifacts.findingIndex.items.length, dryRun.finding_counts.total);
+  assert.equal(artifacts.findingManifest.finding_counts.total, dryRun.finding_counts.total);
+  assert.equal(artifacts.findingManifest.run_files.findings_path, dryRun.run_files.findings_path);
 
-  const decisionsTemplate = JSON.parse(readFileSync(dryRun.run_files.decisions_template_path, 'utf8'));
-  assert.equal(decisionsTemplate.kind, 'tool_catalog_discovery_decision_template');
-  assert.equal(decisionsTemplate.run_files.candidates_path, dryRun.run_files.candidates_path);
-  assert.equal(Object.keys(decisionsTemplate.decisions).length, allCandidates(dryRun).length);
-  for (const decision of Object.values(decisionsTemplate.decisions)) {
-    assert.equal(decision.action, 'review');
-  }
-}
-
-function assertReviewPackShape(reviewPack, label) {
-  for (const expected of [
-    '# Discovery Review Pack',
-    '## Run Files',
-    '## Utility Artifacts',
-    '### StringUtils',
-    'Path: `src/main/java/com/acme/common/StringUtils.java`',
-    'Package: `com.acme.common`',
-    'Signature: `public static String trimToEmpty(String value)`',
-    '## Observed External Usages',
-    '### @vueuse/core',
-    'Import anchor: `src/views/Dashboard.vue:',
-    '#@vueuse/core`',
-    '## Template Patterns',
-    '### typescript-api-client-request',
-    'Anchor: `src/api/orders.ts:3#api-client-request`',
-  ]) {
-    assert(reviewPack.includes(expected), `${label} review pack must include ${expected}`);
+  const seenIndexIds = new Set();
+  for (const item of artifacts.findingIndex.items) {
+    assert(!seenIndexIds.has(item.finding_id), `${label} finding index must be deduped: ${item.finding_id}`);
+    seenIndexIds.add(item.finding_id);
+    assert.equal(typeof item.discovery_fingerprint, 'string');
+    assert(item.discovery_fingerprint.length > 0, `${label} finding index must include fingerprint`);
+    assert(item.dedupe_keys.length > 0, `${label} finding index must include dedupe keys`);
   }
 
-  for (const forbidden of [
-    'tag_hints',
-    'suggested_action',
-    'risk_flags',
-    'Evidence:',
-    'Risk:',
-    'Risks:',
-    'Suggested action',
-    'utility path segment',
-  ]) {
-    assert(!reviewPack.includes(forbidden), `${label} review pack must not include ${forbidden}`);
+  for (const finding of allFindings(artifacts.findings)) {
+    assertFindingAnchorsAreRelative(finding);
+    assertNoSemanticFindingFields(finding, `${label} ${finding.finding_id}`);
+    assert.equal(typeof finding.discovery_fingerprint, 'string');
+    assert.equal(finding.fingerprint_algorithm, 'sha256');
+    assert(Array.isArray(finding.structural_evidence), `${label} ${finding.finding_id} must include structural evidence`);
+    assert(Array.isArray(finding.mechanical_dedupe.keys), `${label} ${finding.finding_id} must include dedupe keys`);
+    assert(
+      finding.mechanical_dedupe.keys.some((key) => key.kind === 'fingerprint' && key.value === finding.discovery_fingerprint),
+      `${label} ${finding.finding_id} must expose fingerprint dedupe key`,
+    );
   }
+
+  return artifacts;
 }
 
 function assertTargetProjectClean(projectRoot) {
   for (const relativePath of [
     '.tool-catalog',
-    'candidates.json',
-    'review-pack.md',
-    'decisions.template.json',
+    'findings.json',
+    'finding-index.json',
+    'finding-manifest.json',
   ]) {
     assert(!existsSync(path.join(projectRoot, relativePath)), `Dry-run must not write ${relativePath} into the target project`);
   }
@@ -309,6 +345,28 @@ function fixtureMemberDecisions(candidate) {
 
 function candidateTraceAnchor(candidate) {
   return candidate.source_anchor ?? candidate.instances?.[0]?.source_anchor ?? candidate.call_anchor;
+}
+
+function fixtureEntryKey(candidate) {
+  if (candidate.candidate_type === 'utility_artifact') {
+    if (candidate.language === 'java') {
+      return 'fixture-artifact:java:string-utils';
+    }
+    if (candidate.source_anchor?.path === 'src/utils/request.ts') {
+      return 'fixture-artifact:typescript:request-utils';
+    }
+    if (candidate.source_anchor?.path === 'src/utils/legacy.ts') {
+      return 'fixture-artifact:typescript:legacy-utils';
+    }
+  }
+  if (candidate.candidate_type === 'observed_external_usage') {
+    return 'fixture-external:vueuse:use-debounce-fn';
+  }
+  if (candidate.candidate_type === 'template_pattern') {
+    return `fixture-template:${candidate.pattern_key}`;
+  }
+
+  throw new Error(`No fixture entry key mapping for candidate ${candidate.candidate_id}`);
 }
 
 function logicalUtilityMembers(members) {
@@ -345,15 +403,165 @@ function finalAcceptedEntry(candidate, decision) {
     ...member,
     ...(memberDecisions.get(member.member_key) ?? {}),
   }));
-
-  return {
-    ...candidate,
+  const entryKey = fixtureEntryKey(candidate);
+  const acceptedEntry = {
     ...entryDecision,
+    name: candidate.name,
+    qualified_name: candidate.qualified_name,
+    language: candidate.language,
+    framework: candidate.framework,
+    module_path: candidate.module_path,
+    source_anchor: candidate.source_anchor ?? candidate.call_anchor,
+    import_text: candidate.import_text,
+    call_text: candidate.call_text,
+    snippet: candidate.snippet,
+    discovery_fingerprint: candidate.discovery_fingerprint,
     members: candidate.candidate_type === 'utility_artifact'
       ? logicalUtilityMembers(mergedMembers)
       : mergedMembers,
     instances: candidate.instances,
+    origin: candidate.origin,
+    origin_key: candidate.origin_key,
   };
+
+  if (candidate.candidate_type === 'utility_artifact') {
+    acceptedEntry.artifact_key = entryKey;
+  } else if (candidate.candidate_type === 'template_pattern') {
+    acceptedEntry.pattern_key = entryKey;
+  } else if (candidate.candidate_type === 'observed_external_usage') {
+    acceptedEntry.usage_key = entryKey;
+  }
+
+  return acceptedEntry;
+}
+
+function selectFixtureCompatibilityCandidates(compatibilityDryRun) {
+  const javaUtility = findCompatibilityCandidate(
+    compatibilityDryRun.candidates.utility_artifacts,
+    (candidate) => candidate.language === 'java' && candidate.name === 'StringUtils' && candidate.members.length >= 2,
+    'Java StringUtils utility',
+  );
+  const tsUtility = findCompatibilityCandidate(
+    compatibilityDryRun.candidates.utility_artifacts,
+    (candidate) => candidate.language === 'typescript' && candidate.source_anchor.path === 'src/utils/request.ts',
+    'TypeScript request utility',
+  );
+  const ignoredUtility = findCompatibilityCandidate(
+    compatibilityDryRun.candidates.utility_artifacts,
+    (candidate) => candidate.source_anchor.path === 'src/utils/legacy.ts',
+    'ignored TypeScript legacy utility',
+  );
+  const externalUsage = findCompatibilityCandidate(
+    compatibilityDryRun.candidates.observed_external_usages,
+    (candidate) => candidate.origin_key === '@vueuse/core' && candidate.call_text?.includes('useDebounceFn'),
+    'VueUse observed external usage',
+  );
+  const templatePattern = findCompatibilityCandidate(
+    compatibilityDryRun.candidates.template_patterns,
+    (candidate) => candidate.pattern_key === 'typescript-api-client-request' && candidate.instance_count >= candidate.threshold,
+    'TypeScript API request template',
+  );
+
+  return {
+    javaUtility,
+    tsUtility,
+    ignoredUtility,
+    externalUsage,
+    templatePattern,
+  };
+}
+
+function selectDeferredCompatibilityCandidate(compatibilityDryRun, acceptedIds, ignoredCandidateId) {
+  const remaining = allCompatibilityCandidates(compatibilityDryRun)
+    .filter((candidate) => !acceptedIds.has(candidate.candidate_id) && candidate.candidate_id !== ignoredCandidateId);
+  const preferred = remaining.find((candidate) => candidate.candidate_type === 'utility_artifact')
+    ?? remaining.find((candidate) => candidate.candidate_type === 'observed_external_usage')
+    ?? remaining[0];
+  assert(preferred, 'Fixture must include a second nonaccepted compatibility record for deferred traceability');
+  return preferred;
+}
+
+function appendJsUtilityMutation(projectRoot, relativePath, exportName) {
+  const absolutePath = path.join(projectRoot, relativePath);
+  const text = readFileSync(absolutePath, 'utf8');
+  writeFileSync(
+    absolutePath,
+    `${text.trimEnd()}
+
+export function ${exportName}(value) {
+  return value;
+}
+`,
+    'utf8',
+  );
+}
+
+function appendJavaUtilityMutation(projectRoot, relativePath, methodName) {
+  const absolutePath = path.join(projectRoot, relativePath);
+  const text = readFileSync(absolutePath, 'utf8');
+  assert(text.trimEnd().endsWith('}'), `Java fixture file must end with a closing brace: ${relativePath}`);
+  writeFileSync(
+    absolutePath,
+    `${text.trimEnd().slice(0, -1)}
+
+  public static String ${methodName}(String value) {
+    return value;
+  }
+}
+`,
+    'utf8',
+  );
+}
+
+function mutateDeferredCandidate(projectRoot, candidate) {
+  if (candidate.candidate_type === 'utility_artifact') {
+    if (candidate.language === 'java') {
+      appendJavaUtilityMutation(projectRoot, candidate.source_anchor.path, 'deferredRegressionUtility');
+      return;
+    }
+    appendJsUtilityMutation(projectRoot, candidate.source_anchor.path, 'deferredRegressionUtility');
+    return;
+  }
+
+  if (candidate.candidate_type === 'observed_external_usage') {
+    const absolutePath = path.join(projectRoot, candidate.source_anchor.path);
+    const text = readFileSync(absolutePath, 'utf8');
+    assert(candidate.call_text, 'Observed external usage fixture must include call_text');
+    writeFileSync(
+      absolutePath,
+      text.replace(candidate.call_text, candidate.call_text.replace('useDebounceFn', 'useThrottleFn')),
+      'utf8',
+    );
+    return;
+  }
+
+  if (candidate.candidate_type === 'template_pattern') {
+    const absolutePath = path.join(projectRoot, candidate.instances[0].source_anchor.path);
+    const text = readFileSync(absolutePath, 'utf8');
+    if (candidate.pattern_key === 'java-spring-mapping-method') {
+      writeFileSync(
+        absolutePath,
+        text.replace('@GetMapping', '@RequestMapping'),
+        'utf8',
+      );
+      return;
+    }
+    writeFileSync(
+      absolutePath,
+      text.replace("return request('/api/orders');", "return fetch('/api/orders').then((response) => response.json());"),
+      'utf8',
+    );
+    return;
+  }
+
+  throw new Error(`Unsupported deferred candidate fixture type: ${candidate.candidate_type}`);
+}
+
+function assertPreclassificationReason(items, reason, predicate, label) {
+  assert(
+    items.some((item) => item.reason === reason && predicate(item)),
+    label,
+  );
 }
 
 function reviewedDecisionFile(decisions) {
@@ -365,16 +573,16 @@ function reviewedDecisionFile(decisions) {
 
 function buildDecisions(dryRun, acceptedCandidates) {
   const acceptedIds = new Set(acceptedCandidates.map((candidate) => candidate.candidate_id));
-  const decisions = Object.fromEntries(allCandidates(dryRun).map((candidate) => [
+  const decisionOverrides = Object.fromEntries(allCompatibilityCandidates(dryRun).map((candidate) => [
     candidate.candidate_id,
     {
       action: 'ignore',
-      reason: 'Fixture regression intentionally leaves this candidate out of the index.',
+      reason: 'Fixture regression intentionally leaves this compatibility record out of the index.',
     },
   ]));
 
   for (const candidate of acceptedCandidates) {
-    decisions[candidate.candidate_id] = {
+    decisionOverrides[candidate.candidate_id] = {
       action: 'accept',
       summary: `Fixture-approved ${candidate.candidate_type.replace(/_/g, ' ')}.`,
       usage_notes: candidate.candidate_type === 'observed_external_usage'
@@ -392,20 +600,35 @@ function buildDecisions(dryRun, acceptedCandidates) {
     };
   }
 
+  const accepted = {
+    utility_artifacts: {},
+    observed_external_usages: {},
+    template_patterns: {},
+  };
+
+  for (const candidate of acceptedCandidates) {
+    const entry = finalAcceptedEntry(candidate, decisionOverrides[candidate.candidate_id]);
+    const entryKey = fixtureEntryKey(candidate);
+    if (candidate.candidate_type === 'utility_artifact') {
+      accepted.utility_artifacts[entryKey] = entry;
+    } else if (candidate.candidate_type === 'observed_external_usage') {
+      accepted.observed_external_usages[entryKey] = entry;
+    } else if (candidate.candidate_type === 'template_pattern') {
+      accepted.template_patterns[entryKey] = entry;
+    }
+  }
+
   return {
     scan: dryRun.scan,
-    candidates: dryRun.candidates,
-    decisions,
-    accepted_entries: acceptedCandidates.map((candidate) => {
-      return finalAcceptedEntry(candidate, decisions[candidate.candidate_id]);
-    }),
-    ignored_candidates: allCandidates(dryRun)
-      .filter((candidate) => !acceptedIds.has(candidate.candidate_id) && decisions[candidate.candidate_id].action === 'ignore')
+    accepted,
+    ignored_candidates: allCompatibilityCandidates(dryRun)
+      .filter((candidate) => !acceptedIds.has(candidate.candidate_id) && decisionOverrides[candidate.candidate_id].action === 'ignore')
       .map((candidate) => ({
         candidate_id: candidate.candidate_id,
         candidate_type: candidate.candidate_type,
         source_anchor: candidateTraceAnchor(candidate),
-        reason: decisions[candidate.candidate_id].reason,
+        discovery_fingerprint: candidate.discovery_fingerprint,
+        reason: decisionOverrides[candidate.candidate_id].reason,
       })),
   };
 }
@@ -426,10 +649,18 @@ try {
   const info = runCliJson(['config', 'info', '--root', projectRoot], { catalogHome });
   assert.equal(info.project_id, 'fixture-project');
   assert.equal(info.root_path, projectRoot);
+  const dbMtimeBeforeDryRun = statSync(info.catalog_path).mtimeMs;
 
   const help = runCli(['--help'], { catalogHome });
   assert(help.stdout.includes('tool-catalog tags [--root <path>] [--json]'), 'CLI help must list the tags command');
   assert(help.stdout.includes('tool-catalog query --tag <tag> --goal <text>'), 'CLI help must list query tag filtering');
+  assert(help.stdout.includes('Harvest discovery Findings and evidence artifacts or apply reviewed decisions.'), 'CLI help must describe discover in Finding-centric terms');
+  assert(!help.stdout.includes('Extract reviewable discovery candidates'), 'CLI help must not use candidate-centric discover wording');
+  const discoverHelp = runCli(['discover', '--help'], { catalogHome });
+  assert(discoverHelp.stdout.includes('Emit Finding evidence artifacts without mutating the project index.'), 'Discover help must describe dry-run as emitting Finding evidence artifacts');
+  assert(discoverHelp.stdout.includes('--json prints dry-run Finding summaries and evidence artifact paths or apply summary data as structured JSON.'), 'Discover help must describe JSON dry-run output as Finding summaries plus artifact paths');
+  assert(!discoverHelp.stdout.includes('Emit reviewable candidates'), 'Discover help must not describe dry-run as reviewable candidates');
+  assert(!discoverHelp.stdout.includes('prints dry-run candidates'), 'Discover help must not describe JSON dry-run output as candidates');
   const tagsHelp = runCli(['tags', '--help'], { catalogHome });
   assert(tagsHelp.stdout.includes('Tool Catalog tags'), 'Tags help must render a dedicated help section');
   const queryHelp = runCli(['query', '--help'], { catalogHome });
@@ -438,42 +669,24 @@ try {
   const fullDryRun = runCliJson(['discover', '--full', '--dry-run', '--root', projectRoot], { catalogHome });
   assert.equal(fullDryRun.project.project_id, 'fixture-project');
   assert.equal(fullDryRun.index_mutated, false);
-  assertDiscoveryRunFiles(fullDryRun, catalogHome, projectRoot, 'full dry-run');
-  assertReviewPackShape(readFileSync(fullDryRun.run_files.review_pack_path, 'utf8'), 'full dry-run');
+  assert.equal(fullDryRun.preclassification.status, 'ready');
+  assert.equal(fullDryRun.preclassification.record_counts.total, 0, 'Initial dry-run must see an empty persisted preclassification index');
+  assert.equal(fullDryRun.preclassification.finding_counts.new, fullDryRun.finding_counts.total, 'Initial dry-run must classify every finding as new');
+  assert.equal(fullDryRun.preclassification.finding_counts.review_queue, fullDryRun.finding_counts.total, 'Initial dry-run must route every finding to review');
+  const fullDryRunArtifacts = assertDiscoveryRunFiles(fullDryRun, catalogHome, projectRoot, 'full dry-run');
+  assert.equal(statSync(fullDryRun.project.catalog_path).mtimeMs, dbMtimeBeforeDryRun, 'Dry-run must not mutate the project catalog SQLite file');
 
-  const candidates = allCandidates(fullDryRun);
-  for (const candidate of candidates) {
-    assertCandidateAnchorsAreRelative(candidate);
-  }
-
-  const javaUtility = findCandidate(
-    fullDryRun.candidates.utility_artifacts,
-    (candidate) => candidate.language === 'java' && candidate.name === 'StringUtils' && candidate.members.length >= 2,
-    'Java StringUtils utility',
-  );
-  const tsUtility = findCandidate(
-    fullDryRun.candidates.utility_artifacts,
-    (candidate) => candidate.language === 'typescript' && candidate.source_anchor.path === 'src/utils/request.ts',
-    'TypeScript request utility',
-  );
-  const ignoredUtility = findCandidate(
-    fullDryRun.candidates.utility_artifacts,
-    (candidate) => candidate.source_anchor.path === 'src/utils/legacy.ts',
-    'ignored TypeScript legacy utility',
-  );
-  const externalUsage = findCandidate(
-    fullDryRun.candidates.observed_external_usages,
-    (candidate) => candidate.origin_key === '@vueuse/core' && candidate.call_text?.includes('useDebounceFn'),
-    'VueUse observed external usage',
-  );
-  const templatePattern = findCandidate(
-    fullDryRun.candidates.template_patterns,
-    (candidate) => candidate.pattern_key === 'typescript-api-client-request' && candidate.instance_count >= candidate.threshold,
-    'TypeScript API request template',
-  );
+  const compatibilityDryRun = decorateCompatibilityProjectionWithFingerprints(fullDryRunArtifacts);
+  const {
+    javaUtility,
+    tsUtility,
+    ignoredUtility,
+    externalUsage,
+    templatePattern,
+  } = selectFixtureCompatibilityCandidates(compatibilityDryRun);
 
   assert(ignoredUtility, 'Ignored fixture candidate must exist');
-  assert(!fullDryRun.candidates.template_patterns.some((candidate) => candidate.pattern_key === 'vue3-element-plus-table-page'), 'Single Vue table page must stay below template threshold');
+  assert(!compatibilityDryRun.candidates.template_patterns.some((candidate) => candidate.pattern_key === 'vue3-element-plus-table-page'), 'Single Vue table page must stay below template threshold');
 
   const changedBelowThreshold = runCliJson([
     'discover',
@@ -484,26 +697,31 @@ try {
     '--root',
     projectRoot,
   ], { catalogHome });
-  assertDiscoveryRunFiles(changedBelowThreshold, catalogHome, projectRoot, 'changed dry-run');
+  const changedDryRunArtifacts = assertDiscoveryRunFiles(changedBelowThreshold, catalogHome, projectRoot, 'changed dry-run');
+  assert.equal(statSync(changedBelowThreshold.project.catalog_path).mtimeMs, dbMtimeBeforeDryRun, 'Changed dry-run must not mutate the project catalog SQLite file');
   assert.equal(
-    changedBelowThreshold.candidates.template_patterns.some((candidate) => candidate.pattern_key === 'typescript-api-client-request'),
+    changedBelowThreshold.finding_counts.template_patterns,
+    0,
+    'Two changed API files must stay below template threshold',
+  );
+  assert.equal(
+    changedDryRunArtifacts.findings.findings.template_patterns.some((finding) => finding.pattern_key === 'typescript-api-client-request'),
     false,
     'Two changed API files must stay below template threshold',
   );
-  const changedReviewPack = readFileSync(changedBelowThreshold.run_files.review_pack_path, 'utf8');
-  assert(changedReviewPack.includes('## Template Patterns'), 'Changed dry-run review pack must include template section');
-  assert(changedReviewPack.includes('- None detected.'), 'Changed dry-run review pack must record empty sections compactly');
+  assert.equal(changedDryRunArtifacts.findings.findings.template_patterns.length, 0, 'Changed dry-run findings file must keep empty template sections compact');
 
   const compactDryRun = runCli(['discover', '--full', '--dry-run', '--root', projectRoot], { catalogHome });
-  assert(compactDryRun.stdout.includes('Discovery Review Pack'), 'Default dry-run stdout must report review pack path');
-  assert(compactDryRun.stdout.includes('review-pack.md'), 'Default dry-run stdout must include review pack file name');
+  assert(compactDryRun.stdout.includes('Raw Findings'), 'Default dry-run stdout must report raw findings path');
+  assert(compactDryRun.stdout.includes('finding-manifest.json'), 'Default dry-run stdout must include finding manifest file name');
+  assert(compactDryRun.stdout.includes('## Preclassification'), 'Default dry-run stdout must include the preclassification summary');
   assert(!compactDryRun.stdout.includes('utility-artifact:java:com.acme.common.StringUtils'), 'Default dry-run stdout must not dump utility candidates');
-  assert(!compactDryRun.stdout.includes('Evidence:'), 'Default dry-run stdout must not dump candidate evidence');
+  assert(!compactDryRun.stdout.includes('structural_evidence'), 'Default dry-run stdout must not dump raw finding evidence');
   assertTargetProjectClean(projectRoot);
 
   const missingTagsPath = path.join(tempRoot, 'missing-tags-decisions.json');
-  const missingTagsDecisions = buildDecisions(fullDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
-  delete missingTagsDecisions.accepted_entries.find((entry) => entry.candidate_id === javaUtility.candidate_id).capability_tags;
+  const missingTagsDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  delete missingTagsDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].capability_tags;
   writeFileSync(missingTagsPath, `${JSON.stringify(reviewedDecisionFile(missingTagsDecisions), null, 2)}\n`, 'utf8');
   const missingTagsApply = runCli(['discover', '--apply', missingTagsPath, '--root', projectRoot], {
     catalogHome,
@@ -512,8 +730,8 @@ try {
   assert(missingTagsApply.stderr.includes('capability_tags'), 'Apply must reject accepted utility artifacts without tags');
 
   const missingSummaryPath = path.join(tempRoot, 'missing-summary-decisions.json');
-  const missingSummaryDecisions = buildDecisions(fullDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
-  delete missingSummaryDecisions.accepted_entries.find((entry) => entry.candidate_id === javaUtility.candidate_id).summary;
+  const missingSummaryDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  delete missingSummaryDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].summary;
   writeFileSync(missingSummaryPath, `${JSON.stringify(reviewedDecisionFile(missingSummaryDecisions), null, 2)}\n`, 'utf8');
   const missingSummaryApply = runCli(['discover', '--apply', missingSummaryPath, '--root', projectRoot], {
     catalogHome,
@@ -521,22 +739,77 @@ try {
   });
   assert(missingSummaryApply.stderr.includes('summary'), 'Apply must reject accepted utility artifacts without summary');
 
-  const decisions = buildDecisions(fullDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const missingSourceAnchorPath = path.join(tempRoot, 'missing-source-anchor-decisions.json');
+  const missingSourceAnchorDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  delete missingSourceAnchorDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].source_anchor;
+  writeFileSync(missingSourceAnchorPath, `${JSON.stringify(reviewedDecisionFile(missingSourceAnchorDecisions), null, 2)}\n`, 'utf8');
+  const missingSourceAnchorApply = runCli(['discover', '--apply', missingSourceAnchorPath, '--root', projectRoot], {
+    catalogHome,
+    expect: 2,
+  });
+  assert(missingSourceAnchorApply.stderr.includes('source_anchor'), 'Apply must reject accepted utility artifacts without source anchors');
+
+  const missingMembersPath = path.join(tempRoot, 'missing-members-decisions.json');
+  const missingMembersDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  missingMembersDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].members = [];
+  writeFileSync(missingMembersPath, `${JSON.stringify(reviewedDecisionFile(missingMembersDecisions), null, 2)}\n`, 'utf8');
+  const missingMembersApply = runCli(['discover', '--apply', missingMembersPath, '--root', projectRoot], {
+    catalogHome,
+    expect: 2,
+  });
+  assert(missingMembersApply.stderr.includes('at least one member'), 'Apply must reject accepted utility artifacts without reusable members');
+
+  const missingTemplateInstancesPath = path.join(tempRoot, 'missing-template-instances-decisions.json');
+  const missingTemplateInstancesDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  missingTemplateInstancesDecisions.accepted.template_patterns[fixtureEntryKey(templatePattern)].instances = [];
+  writeFileSync(missingTemplateInstancesPath, `${JSON.stringify(reviewedDecisionFile(missingTemplateInstancesDecisions), null, 2)}\n`, 'utf8');
+  const missingTemplateInstancesApply = runCli(['discover', '--apply', missingTemplateInstancesPath, '--root', projectRoot], {
+    catalogHome,
+    expect: 2,
+  });
+  assert(missingTemplateInstancesApply.stderr.includes('representative instances'), 'Apply must reject accepted template patterns without representative instances');
+
+  const mismatchedArtifactKeyPath = path.join(tempRoot, 'mismatched-artifact-key-decisions.json');
+  const mismatchedArtifactKeyDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  mismatchedArtifactKeyDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].artifact_key = 'artifact:conflicting-utility-key';
+  writeFileSync(mismatchedArtifactKeyPath, `${JSON.stringify(reviewedDecisionFile(mismatchedArtifactKeyDecisions), null, 2)}\n`, 'utf8');
+  const mismatchedArtifactKeyApply = runCli(['discover', '--apply', mismatchedArtifactKeyPath, '--root', projectRoot], {
+    catalogHome,
+    expect: 2,
+  });
+  assert(mismatchedArtifactKeyApply.stderr.includes('artifact_key aligned with the map key'), 'Apply must reject accepted utility artifacts whose payload artifact_key conflicts with the map key');
+
+  const mismatchedTemplateKeyPath = path.join(tempRoot, 'mismatched-template-key-decisions.json');
+  const mismatchedTemplateKeyDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  mismatchedTemplateKeyDecisions.accepted.template_patterns[fixtureEntryKey(templatePattern)].pattern_key = 'template:conflicting-template-key';
+  writeFileSync(mismatchedTemplateKeyPath, `${JSON.stringify(reviewedDecisionFile(mismatchedTemplateKeyDecisions), null, 2)}\n`, 'utf8');
+  const mismatchedTemplateKeyApply = runCli(['discover', '--apply', mismatchedTemplateKeyPath, '--root', projectRoot], {
+    catalogHome,
+    expect: 2,
+  });
+  assert(mismatchedTemplateKeyApply.stderr.includes('pattern_key aligned with the map key'), 'Apply must reject accepted template patterns whose payload pattern_key conflicts with the map key');
+
+  const mismatchedUsageKeyPath = path.join(tempRoot, 'mismatched-usage-key-decisions.json');
+  const mismatchedUsageKeyDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  mismatchedUsageKeyDecisions.accepted.observed_external_usages[fixtureEntryKey(externalUsage)].usage_key = 'external:conflicting-usage-key';
+  writeFileSync(mismatchedUsageKeyPath, `${JSON.stringify(reviewedDecisionFile(mismatchedUsageKeyDecisions), null, 2)}\n`, 'utf8');
+  const mismatchedUsageKeyApply = runCli(['discover', '--apply', mismatchedUsageKeyPath, '--root', projectRoot], {
+    catalogHome,
+    expect: 2,
+  });
+  assert(mismatchedUsageKeyApply.stderr.includes('usage_key aligned with the map key'), 'Apply must reject accepted external usages whose payload usage_key conflicts with the map key');
+
+  const decisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
   const acceptedIds = new Set([javaUtility, tsUtility, externalUsage, templatePattern].map((candidate) => candidate.candidate_id));
-  const deferredCandidate = allCandidates(fullDryRun).find((candidate) => !acceptedIds.has(candidate.candidate_id) && candidate.candidate_id !== ignoredUtility.candidate_id);
-  assert(deferredCandidate, 'Fixture must include a second nonaccepted candidate for deferred traceability');
-  decisions.decisions[deferredCandidate.candidate_id] = {
-    action: 'defer',
-    reason: 'Fixture regression keeps this candidate deferred for user review.',
-  };
+  const deferredCandidate = selectDeferredCompatibilityCandidate(compatibilityDryRun, acceptedIds, ignoredUtility.candidate_id);
   decisions.ignored_candidates = decisions.ignored_candidates.filter((candidate) => candidate.candidate_id !== deferredCandidate.candidate_id);
   decisions.deferred_candidates = [{
     candidate_id: deferredCandidate.candidate_id,
     candidate_type: deferredCandidate.candidate_type,
     source_anchor: candidateTraceAnchor(deferredCandidate),
-    reason: decisions.decisions[deferredCandidate.candidate_id].reason,
+    discovery_fingerprint: deferredCandidate.discovery_fingerprint,
+    reason: 'Fixture regression keeps this candidate deferred for user review.',
   }];
-  assert.equal(decisions.decisions[ignoredUtility.candidate_id].action, 'ignore');
   writeFileSync(decisionsPath, `${JSON.stringify(reviewedDecisionFile(decisions), null, 2)}\n`, 'utf8');
 
   const applySummary = runCliJson(['discover', '--apply', decisionsPath, '--root', projectRoot], { catalogHome });
@@ -566,8 +839,153 @@ try {
     ).length === 1,
     'Initial apply must persist the deferred fixture candidate trace row',
   );
+  const storedFingerprintRows = runSqliteJson(
+    applySummary.project.catalog_path,
+    'SELECT record_family, record_kind, record_key FROM discovery_fingerprints ORDER BY record_family, record_kind, record_key;',
+  );
+  assert.equal(
+    storedFingerprintRows.length,
+    4 + applySummary.decisions.ignored_candidates + applySummary.decisions.deferred_candidates,
+    'Initial apply must persist structural fingerprints for accepted entries, suppressions, and deferrals',
+  );
 
-  const replayDecisions = buildDecisions(fullDryRun, [javaUtility, tsUtility, ignoredUtility, deferredCandidate, externalUsage, templatePattern]);
+  const preclassProjectRoot = path.join(tempRoot, 'preclassification-project');
+  const preclassCatalogHome = path.join(tempRoot, 'preclassification-catalog-home');
+  const preclassDecisionsPath = path.join(tempRoot, 'preclassification-decisions.json');
+  mkdirSync(preclassProjectRoot, { recursive: true });
+  createFixture(preclassProjectRoot);
+  runCliJson(['config', 'project-id', 'fixture-preclassification', '--root', preclassProjectRoot], { catalogHome: preclassCatalogHome });
+  const preclassFullDryRun = runCliJson(['discover', '--full', '--dry-run', '--root', preclassProjectRoot], { catalogHome: preclassCatalogHome });
+  const preclassArtifacts = assertDiscoveryRunFiles(preclassFullDryRun, preclassCatalogHome, preclassProjectRoot, 'preclassification seed dry-run');
+  const preclassCompatibility = decorateCompatibilityProjectionWithFingerprints(preclassArtifacts);
+  const preclassCandidates = selectFixtureCompatibilityCandidates(preclassCompatibility);
+  const preclassAcceptedIds = new Set([
+    preclassCandidates.javaUtility,
+    preclassCandidates.tsUtility,
+    preclassCandidates.externalUsage,
+    preclassCandidates.templatePattern,
+  ].map((candidate) => candidate.candidate_id));
+  const preclassDeferredCandidate = selectDeferredCompatibilityCandidate(
+    preclassCompatibility,
+    preclassAcceptedIds,
+    preclassCandidates.ignoredUtility.candidate_id,
+  );
+  const preclassDecisions = buildDecisions(preclassCompatibility, [
+    preclassCandidates.javaUtility,
+    preclassCandidates.tsUtility,
+    preclassCandidates.externalUsage,
+    preclassCandidates.templatePattern,
+  ]);
+  preclassDecisions.ignored_candidates = preclassDecisions.ignored_candidates
+    .filter((candidate) => candidate.candidate_id !== preclassDeferredCandidate.candidate_id);
+  preclassDecisions.deferred_candidates = [{
+    candidate_id: preclassDeferredCandidate.candidate_id,
+    candidate_type: preclassDeferredCandidate.candidate_type,
+    source_anchor: candidateTraceAnchor(preclassDeferredCandidate),
+    discovery_fingerprint: preclassDeferredCandidate.discovery_fingerprint,
+    reason: 'Fixture preclassification keeps this candidate deferred for later review.',
+  }];
+  writeFileSync(preclassDecisionsPath, `${JSON.stringify(reviewedDecisionFile(preclassDecisions), null, 2)}\n`, 'utf8');
+  const preclassApplySummary = runCliJson(['discover', '--apply', preclassDecisionsPath, '--root', preclassProjectRoot], { catalogHome: preclassCatalogHome });
+  const unchangedPreclass = runCliJson(['discover', '--full', '--dry-run', '--root', preclassProjectRoot], { catalogHome: preclassCatalogHome });
+  assert.equal(unchangedPreclass.preclassification.status, 'ready');
+  assert.equal(unchangedPreclass.preclassification.index.schema_version, 5);
+  assert.equal(unchangedPreclass.preclassification.record_counts.catalog_entries, 4, 'Preclassification must persist accepted catalog entry fingerprints');
+  assert.equal(unchangedPreclass.preclassification.record_counts.deferrals, 1, 'Preclassification must persist deferred fingerprints');
+  assert.equal(
+    unchangedPreclass.preclassification.record_counts.suppressions,
+    preclassApplySummary.decisions.ignored_candidates,
+    'Preclassification must persist suppression fingerprints',
+  );
+  assert.equal(unchangedPreclass.preclassification.finding_counts.review_queue, 0, 'Unchanged reruns must not resend persisted evidence to worker review');
+  assert.equal(unchangedPreclass.preclassification.finding_counts.new, 0, 'Unchanged reruns must not treat persisted evidence as new');
+  assert.equal(unchangedPreclass.preclassification.finding_counts.unchanged_catalog_entries, 4, 'Accepted entries must classify as unchanged');
+  assert.equal(
+    unchangedPreclass.preclassification.finding_counts.unchanged_suppressions,
+    preclassApplySummary.decisions.ignored_candidates,
+    'Suppressed findings must classify as unchanged suppressions',
+  );
+  assert.equal(unchangedPreclass.preclassification.finding_counts.unchanged_deferrals, 1, 'Deferred findings must classify as unchanged deferrals');
+  assert.equal(unchangedPreclass.preclassification.cleanup_counts.total, 0, 'Unchanged reruns must not emit cleanup work');
+
+  const staleDeferralProjectRoot = path.join(tempRoot, 'stale-deferral-project');
+  const staleDeferralCatalogHome = path.join(tempRoot, 'stale-deferral-catalog-home');
+  const staleDeferralDecisionsPath = path.join(tempRoot, 'stale-deferral-decisions.json');
+  mkdirSync(staleDeferralProjectRoot, { recursive: true });
+  createFixture(staleDeferralProjectRoot);
+  runCliJson(['config', 'project-id', 'fixture-stale-deferral', '--root', staleDeferralProjectRoot], { catalogHome: staleDeferralCatalogHome });
+  const staleDeferralSeedDryRun = runCliJson(['discover', '--full', '--dry-run', '--root', staleDeferralProjectRoot], { catalogHome: staleDeferralCatalogHome });
+  const staleDeferralArtifacts = assertDiscoveryRunFiles(staleDeferralSeedDryRun, staleDeferralCatalogHome, staleDeferralProjectRoot, 'stale deferral seed dry-run');
+  const staleDeferralCompatibility = decorateCompatibilityProjectionWithFingerprints(staleDeferralArtifacts);
+  const staleDeferralCandidates = selectFixtureCompatibilityCandidates(staleDeferralCompatibility);
+  const staleDeferredCandidate = staleDeferralCandidates.ignoredUtility;
+  const staleDeferralDecisions = buildDecisions(staleDeferralCompatibility, [
+    staleDeferralCandidates.javaUtility,
+    staleDeferralCandidates.tsUtility,
+    staleDeferralCandidates.externalUsage,
+    staleDeferralCandidates.templatePattern,
+  ]);
+  staleDeferralDecisions.ignored_candidates = staleDeferralDecisions.ignored_candidates
+    .filter((candidate) => candidate.candidate_id !== staleDeferredCandidate.candidate_id);
+  staleDeferralDecisions.deferred_candidates = [{
+    candidate_id: staleDeferredCandidate.candidate_id,
+    candidate_type: staleDeferredCandidate.candidate_type,
+    source_anchor: candidateTraceAnchor(staleDeferredCandidate),
+    discovery_fingerprint: staleDeferredCandidate.discovery_fingerprint,
+    reason: 'Fixture regression keeps this candidate deferred until it changes.',
+  }];
+  writeFileSync(staleDeferralDecisionsPath, `${JSON.stringify(reviewedDecisionFile(staleDeferralDecisions), null, 2)}\n`, 'utf8');
+  runCliJson(['discover', '--apply', staleDeferralDecisionsPath, '--root', staleDeferralProjectRoot], { catalogHome: staleDeferralCatalogHome });
+  mutateDeferredCandidate(staleDeferralProjectRoot, staleDeferredCandidate);
+
+  const staleDeferredPreclass = runCliJson(['discover', '--full', '--dry-run', '--root', staleDeferralProjectRoot], { catalogHome: staleDeferralCatalogHome });
+  assert.equal(staleDeferredPreclass.preclassification.finding_counts.review_queue, 1, 'Changed deferred evidence must reopen for review');
+  assert.equal(staleDeferredPreclass.preclassification.finding_counts.reopened_deferrals, 1, 'Changed deferred evidence must classify as reopened deferral review work');
+  assert.equal(staleDeferredPreclass.preclassification.cleanup_counts.total, 0, 'Changed deferred evidence must stay in review rather than cleanup when source still exists');
+  assertPreclassificationReason(
+    staleDeferredPreclass.preclassification.review_queue,
+    'stale-deferral',
+    (item) => item.matched_record?.record_key === staleDeferredCandidate.candidate_id,
+    'Changed deferred evidence must reopen as stale deferral review work',
+  );
+
+  appendJsUtilityMutation(preclassProjectRoot, 'src/utils/request.ts', 'requestRegressionMutation');
+  appendJsUtilityMutation(preclassProjectRoot, 'src/utils/legacy.ts', 'legacyRegressionMutation');
+  mutateDeferredCandidate(preclassProjectRoot, preclassDeferredCandidate);
+  rmSync(path.join(preclassProjectRoot, 'src/views/Dashboard.vue'));
+
+  const changedPreclass = runCliJson(['discover', '--full', '--dry-run', '--root', preclassProjectRoot], { catalogHome: preclassCatalogHome });
+  assert.equal(changedPreclass.preclassification.finding_counts.review_queue, 2, 'Changed reruns must reopen changed entries and stale suppressions for review');
+  assert.equal(changedPreclass.preclassification.finding_counts.reopened_catalog_entries, 1, 'Changed accepted entry must reopen for review');
+  assert.equal(changedPreclass.preclassification.finding_counts.reopened_suppressions, 1, 'Changed suppression must reopen for review');
+  assert.equal(changedPreclass.preclassification.finding_counts.reopened_deferrals, 0, 'Missing-source deferrals should leave review and enter cleanup reporting instead');
+  assert.equal(changedPreclass.preclassification.cleanup_counts.missing_source_records, 2, 'Missing-source records must be reported for cleanup');
+  assertPreclassificationReason(
+    changedPreclass.preclassification.review_queue,
+    'changed-catalog-entry',
+    (item) => item.matched_record?.record_key === fixtureEntryKey(preclassCandidates.tsUtility),
+    'Changed accepted utility must be reopened as a catalog entry review item',
+  );
+  assertPreclassificationReason(
+    changedPreclass.preclassification.review_queue,
+    'stale-suppression',
+    (item) => item.matched_record?.record_key === preclassCandidates.ignoredUtility.candidate_id,
+    'Changed suppressed utility must reopen as stale suppression review work',
+  );
+  assertPreclassificationReason(
+    changedPreclass.preclassification.cleanup_queue,
+    'missing-source',
+    (item) => item.record_key === fixtureEntryKey(preclassCandidates.externalUsage),
+    'Missing-source accepted external usage must be reported for cleanup',
+  );
+  assertPreclassificationReason(
+    changedPreclass.preclassification.cleanup_queue,
+    'missing-source',
+    (item) => item.record_key === preclassDeferredCandidate.candidate_id,
+    'Missing-source deferred evidence must be reported for cleanup',
+  );
+
+  const replayDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, ignoredUtility, deferredCandidate, externalUsage, templatePattern]);
   writeFileSync(decisionsPath, `${JSON.stringify(reviewedDecisionFile(replayDecisions), null, 2)}\n`, 'utf8');
   const replaySummary = runCliJson(['discover', '--apply', decisionsPath, '--root', projectRoot], { catalogHome });
   assert.equal(replaySummary.index_mutated, true);
@@ -623,10 +1041,10 @@ try {
   ], { catalogHome });
   assert.equal(utilityQuery.index_mutated, false);
   assert(
-    utilityQuery.results.some((result) => result.selector === `artifact:${tsUtility.candidate_id}`),
+    utilityQuery.results.some((result) => result.selector === `artifact:${fixtureEntryKey(tsUtility)}`),
     'Tag query must return the accepted TypeScript utility artifact group',
   );
-  const groupedUtility = utilityQuery.results.find((result) => result.selector === `artifact:${tsUtility.candidate_id}`);
+  const groupedUtility = utilityQuery.results.find((result) => result.selector === `artifact:${fixtureEntryKey(tsUtility)}`);
   assert.equal(groupedUtility.kind, 'artifact');
   assert.equal(groupedUtility.matched_by, 'member');
   assert.equal(groupedUtility.summary, 'Fixture-approved utility artifact.');
@@ -666,7 +1084,8 @@ try {
     '--root',
     projectRoot,
   ], { catalogHome });
-  const overloadArtifactGroup = overloadQuery.results.find((result) => result.selector === `artifact:${javaUtility.candidate_id}`);
+  const overloadArtifactSelector = `artifact:${fixtureEntryKey(javaUtility)}`;
+  const overloadArtifactGroup = overloadQuery.results.find((result) => result.selector === overloadArtifactSelector);
   assert(overloadArtifactGroup, 'Query must keep overloaded logical members grouped under the Java artifact');
   assert.equal(overloadArtifactGroup.matched_by, 'member');
   const overloadMember = overloadArtifactGroup.matching_members.find((member) => member.selector === `member:${overloadedMemberKey}`);
@@ -698,7 +1117,7 @@ try {
     projectRoot,
   ], { catalogHome });
   assert(
-    javaQuery.results.some((result) => result.selector === `artifact:${javaUtility.candidate_id}`),
+    javaQuery.results.some((result) => result.selector === `artifact:${fixtureEntryKey(javaUtility)}`),
     'Tag query must return the accepted Java utility artifact group',
   );
 
@@ -714,11 +1133,11 @@ try {
     projectRoot,
   ], { catalogHome });
   assert(
-    multiTagAndQuery.results.some((result) => result.selector === `artifact:${tsUtility.candidate_id}`),
+    multiTagAndQuery.results.some((result) => result.selector === `artifact:${fixtureEntryKey(tsUtility)}`),
     'Multiple tag filters must retain entries that satisfy every requested tag',
   );
   assert(
-    multiTagAndQuery.results.every((result) => result.selector !== `template:${templatePattern.pattern_key}`),
+    multiTagAndQuery.results.every((result) => result.selector !== `template:${fixtureEntryKey(templatePattern)}`),
     'Multiple tag filters must exclude entries that miss any requested tag',
   );
 
@@ -734,7 +1153,7 @@ try {
     projectRoot,
   ], { catalogHome });
   assert(
-    templateTagQuery.results.some((result) => result.selector === `template:${templatePattern.pattern_key}`),
+    templateTagQuery.results.some((result) => result.selector === `template:${fixtureEntryKey(templatePattern)}`),
     'Template tag query must preserve template pattern results',
   );
 
@@ -748,7 +1167,7 @@ try {
     projectRoot,
   ], { catalogHome });
   assert(
-    externalQuery.results.some((result) => result.selector === `external:${externalUsage.candidate_id}`),
+    externalQuery.results.some((result) => result.selector === `external:${fixtureEntryKey(externalUsage)}`),
     'Query must return observed external usage',
   );
 
@@ -769,7 +1188,7 @@ try {
     'No-result tag queries must suggest one vocabulary remap or one broadened no-tag retry',
   );
 
-  const showArtifact = runCliJson(['show', `artifact:${tsUtility.candidate_id}`, '--root', projectRoot], { catalogHome });
+  const showArtifact = runCliJson(['show', `artifact:${fixtureEntryKey(tsUtility)}`, '--root', projectRoot], { catalogHome });
   assert.equal(showArtifact.found, true);
   assert.equal(showArtifact.entry.kind, 'artifact');
   assert.equal(showArtifact.entry.summary, 'Fixture-approved utility artifact.');
@@ -779,12 +1198,12 @@ try {
   assert(showArtifact.entry.members.every((member) => member.capability_tags.length > 0), 'Artifact members must surface capability tags');
   assert(showArtifact.entry.members.every((member) => member.usage_notes), 'Artifact members must surface usage notes');
   assertRelativeAnchor(showArtifact.entry.source_anchor, showArtifact.entry.selector);
-  const showArtifactMarkdown = runCli(['show', `artifact:${tsUtility.candidate_id}`, '--root', projectRoot], { catalogHome });
+  const showArtifactMarkdown = runCli(['show', `artifact:${fixtureEntryKey(tsUtility)}`, '--root', projectRoot], { catalogHome });
   assert(showArtifactMarkdown.stdout.includes('Fixture-approved utility artifact.'), 'Markdown show must surface the accepted summary');
   assert(showArtifactMarkdown.stdout.includes('- Tags: `http`, `request`'), 'Markdown show must surface tags');
   assert(showArtifactMarkdown.stdout.includes('- Usage notes: Use this utility artifact in fixture tests.'), 'Markdown show must surface usage notes');
 
-  const showJavaArtifact = runCliJson(['show', `artifact:${javaUtility.candidate_id}`, '--root', projectRoot], { catalogHome });
+  const showJavaArtifact = runCliJson(['show', `artifact:${fixtureEntryKey(javaUtility)}`, '--root', projectRoot], { catalogHome });
   assert.equal(showJavaArtifact.found, true);
   assert.equal(showJavaArtifact.entry.kind, 'artifact');
   assertRelativeAnchor(showJavaArtifact.entry.source_anchor, showJavaArtifact.entry.selector);
@@ -796,7 +1215,7 @@ try {
   for (const signature of overloadedJavaMember.signatures) {
     assertRelativeAnchor(signature.source_anchor, overloadedJavaMember.identifier);
   }
-  const showJavaArtifactMarkdown = runCli(['show', `artifact:${javaUtility.candidate_id}`, '--root', projectRoot], { catalogHome });
+  const showJavaArtifactMarkdown = runCli(['show', `artifact:${fixtureEntryKey(javaUtility)}`, '--root', projectRoot], { catalogHome });
   assert(showJavaArtifactMarkdown.stdout.includes('- Signatures: 2'), 'Artifact markdown must surface overload signatures compactly');
 
   const showJavaMember = runCliJson(['show', `member:${overloadedMemberKey}`, '--root', projectRoot], { catalogHome });
@@ -805,7 +1224,7 @@ try {
   assert.equal(showJavaMember.entry.signature_count, 2);
   assert.equal(showJavaMember.entry.signatures.length, 2);
 
-  const showTemplate = runCliJson(['show', `template:${templatePattern.pattern_key}`, '--root', projectRoot], { catalogHome });
+  const showTemplate = runCliJson(['show', `template:${fixtureEntryKey(templatePattern)}`, '--root', projectRoot], { catalogHome });
   assert.equal(showTemplate.found, true);
   assert.equal(showTemplate.entry.summary, 'Fixture-approved template pattern.');
   assert.deepEqual(showTemplate.entry.capability_tags.map((item) => item.tag), ['api-client', 'request']);
@@ -816,11 +1235,11 @@ try {
     assertRelativeAnchor(instance.source_anchor, instance.source_anchor.text);
   }
 
-  const verifyArtifact = runCliJson(['verify', `artifact:${tsUtility.candidate_id}`, '--root', projectRoot], { catalogHome });
+  const verifyArtifact = runCliJson(['verify', `artifact:${fixtureEntryKey(tsUtility)}`, '--root', projectRoot], { catalogHome });
   assert.equal(verifyArtifact.ok, true);
   assert.equal(verifyArtifact.status, 'verified');
 
-  const verifyJavaArtifact = runCliJson(['verify', `artifact:${javaUtility.candidate_id}`, '--root', projectRoot], { catalogHome });
+  const verifyJavaArtifact = runCliJson(['verify', `artifact:${fixtureEntryKey(javaUtility)}`, '--root', projectRoot], { catalogHome });
   assert.equal(verifyJavaArtifact.ok, true);
   assert.equal(verifyJavaArtifact.status, 'verified');
   const verifyJavaMember = runCliJson(['verify', `member:${overloadedMemberKey}`, '--root', projectRoot], { catalogHome });
@@ -828,11 +1247,11 @@ try {
   assert.equal(verifyJavaMember.status, 'verified');
   assert.equal(verifyJavaMember.checks.filter((check) => check.label.startsWith('member:signature:')).length, 2, 'Verify must check each stored overload signature');
 
-  const verifyTemplate = runCliJson(['verify', `template:${templatePattern.pattern_key}`, '--root', projectRoot], { catalogHome });
+  const verifyTemplate = runCliJson(['verify', `template:${fixtureEntryKey(templatePattern)}`, '--root', projectRoot], { catalogHome });
   assert.equal(verifyTemplate.ok, true);
   assert.equal(verifyTemplate.status, 'verified');
 
-  const verifyExternal = runCliJson(['verify', `external:${externalUsage.candidate_id}`, '--root', projectRoot], { catalogHome });
+  const verifyExternal = runCliJson(['verify', `external:${fixtureEntryKey(externalUsage)}`, '--root', projectRoot], { catalogHome });
   assert.equal(verifyExternal.ok, true);
   assert.equal(verifyExternal.status, 'verified');
 
@@ -848,7 +1267,7 @@ try {
 }, 150)`, 'const refresh = () => undefined'),
     'utf8',
   );
-  const staleExternal = runCliJson(['verify', `external:${externalUsage.candidate_id}`, '--root', projectRoot], {
+  const staleExternal = runCliJson(['verify', `external:${fixtureEntryKey(externalUsage)}`, '--root', projectRoot], {
     catalogHome,
     expect: 1,
   });
