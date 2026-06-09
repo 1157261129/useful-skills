@@ -2,7 +2,7 @@
 
 ## Project Index
 
-A catalog of non-business utility classes and recurring template code discovered for one target project. Multiple working trees that represent the same target project share one project index.
+A catalog of accepted reusable entries, suppressions, deferrals, and discovery fingerprints for one target project. Multiple working trees that represent the same target project share one project index.
 
 ## Target Project
 
@@ -13,6 +13,22 @@ Example: `costs` is one target project even when it is checked out into multiple
 ## Template Code
 
 A recurring code pattern that appears many times in the target project and is useful for agents to reuse as an implementation example.
+
+## Catalog Entry
+
+A final accepted reusable item stored in the project index, such as a utility artifact, utility member, template pattern, or observed external utility usage.
+
+## Finding
+
+A structural evidence record produced during discovery. A finding is not a recommendation, decision, or catalog entry.
+
+## Review Group
+
+A worker-organized collection of findings that appear to describe the same reusable boundary, repeated pattern, or observed external usage.
+
+## Evidence Harvest
+
+The discovery stage that collects findings from a target project without deciding whether they should become catalog entries.
 
 ## Tool Catalog CLI
 
@@ -32,11 +48,23 @@ The user-invoked skill that discovers utility classes and template code, then up
 
 ## Discovery Review Pack
 
-A Markdown discovery artifact grouped by utility class or template pattern so the discovery agent can review candidates, decide accepted entries, and identify ambiguous items that need user confirmation.
+A Markdown discovery artifact grouped around findings or review groups so discovery workers can organize evidence before final catalog decisions are made.
 
 ## Discovery Decision File
 
-A structured JSON artifact created after review that records final accepted, ignored, and deferred discovery decisions. Discovery apply consumes this file when updating the project index.
+A structured JSON artifact created after worker review that records final catalog entries, suppressions, and deferrals. Discovery apply consumes this file when updating the project index.
+
+## Suppression
+
+A recorded discovery decision that prevents unchanged non-entry evidence from repeatedly consuming discovery review effort.
+
+## Deferral
+
+A recorded discovery decision for evidence that is not ready to become a catalog entry but should remain visible to future discovery runs when relevant context changes.
+
+## Discovery Fingerprint
+
+A structural comparison key used to determine whether a catalog entry, suppression, deferral, or finding is unchanged, stale, or new in a later discovery run.
 
 ## Utility Class
 
