@@ -158,20 +158,24 @@ const refresh = useDebounceFn(() => {
 `);
 }
 
-function allCompatibilityCandidates(output) {
-  return [
-    ...output.candidates.utility_artifacts,
-    ...output.candidates.observed_external_usages,
-    ...output.candidates.template_patterns,
-  ];
-}
-
 function allFindings(output) {
   return [
     ...output.findings.utility_artifacts,
     ...output.findings.observed_external_usages,
     ...output.findings.template_patterns,
   ];
+}
+
+function decisionFinding(finding) {
+  return {
+    ...finding,
+    candidate_id: finding.finding_id,
+    candidate_type: finding.finding_type,
+  };
+}
+
+function allDecisionFindings(output) {
+  return allFindings(output).map((finding) => decisionFinding(finding));
 }
 
 function assertInsidePath(parentPath, childPath, label) {
@@ -190,9 +194,9 @@ function assertNotInsidePath(parentPath, childPath, label) {
   );
 }
 
-function findCompatibilityCandidate(items, predicate, label) {
+function findDecisionFinding(items, predicate, label) {
   const found = items.find(predicate);
-  assert(found, `Missing compatibility projection record: ${label}`);
+  assert(found, `Missing Finding fixture record: ${label}`);
   return found;
 }
 
@@ -223,17 +227,7 @@ function loadFindingArtifacts(dryRun) {
     findings: JSON.parse(readFileSync(dryRun.run_files.findings_path, 'utf8')),
     findingIndex: JSON.parse(readFileSync(dryRun.run_files.finding_index_path, 'utf8')),
     findingManifest: JSON.parse(readFileSync(dryRun.run_files.finding_manifest_path, 'utf8')),
-    compatibilityProjection: JSON.parse(readFileSync(dryRun.run_files.compatibility_candidates_path, 'utf8')),
   };
-}
-
-function decorateCompatibilityProjectionWithFingerprints(artifacts) {
-  const decorated = JSON.parse(JSON.stringify(artifacts.compatibilityProjection));
-  const fingerprintsById = new Map(allFindings(artifacts.findings).map((finding) => [finding.finding_id, finding.discovery_fingerprint]));
-  for (const candidate of allCompatibilityCandidates(decorated)) {
-    candidate.discovery_fingerprint = fingerprintsById.get(candidate.candidate_id) ?? null;
-  }
-  return decorated;
 }
 
 function assertNoSemanticFindingFields(finding, label) {
@@ -267,7 +261,6 @@ function assertDiscoveryRunFiles(dryRun, catalogHome, projectRoot, label) {
     ['findings_path', dryRun.run_files.findings_path],
     ['finding_index_path', dryRun.run_files.finding_index_path],
     ['finding_manifest_path', dryRun.run_files.finding_manifest_path],
-    ['compatibility_candidates_path', dryRun.run_files.compatibility_candidates_path],
   ]) {
     assertInsidePath(catalogHome, filePath, `${label} ${key}`);
     assertNotInsidePath(projectRoot, filePath, `${label} ${key}`);
@@ -278,7 +271,6 @@ function assertDiscoveryRunFiles(dryRun, catalogHome, projectRoot, label) {
   assert.equal(artifacts.findings.kind, 'tool_catalog_discovery_findings');
   assert.equal(artifacts.findingIndex.kind, 'tool_catalog_discovery_finding_index');
   assert.equal(artifacts.findingManifest.kind, 'tool_catalog_discovery_finding_manifest');
-  assert.equal(artifacts.compatibilityProjection.kind, 'tool_catalog_discovery_candidate_compat');
   assert.equal(artifacts.findings.project.project_id, dryRun.project.project_id);
   assert.equal(artifacts.findingIndex.items.length, dryRun.finding_counts.total);
   assert.equal(artifacts.findingManifest.finding_counts.total, dryRun.finding_counts.total);
@@ -435,29 +427,34 @@ function finalAcceptedEntry(candidate, decision) {
   return acceptedEntry;
 }
 
-function selectFixtureCompatibilityCandidates(compatibilityDryRun) {
-  const javaUtility = findCompatibilityCandidate(
-    compatibilityDryRun.candidates.utility_artifacts,
+function selectFixtureFindings(findingsPayload) {
+  const groupedFindings = {
+    utility_artifacts: findingsPayload.findings.utility_artifacts.map((finding) => decisionFinding(finding)),
+    observed_external_usages: findingsPayload.findings.observed_external_usages.map((finding) => decisionFinding(finding)),
+    template_patterns: findingsPayload.findings.template_patterns.map((finding) => decisionFinding(finding)),
+  };
+  const javaUtility = findDecisionFinding(
+    groupedFindings.utility_artifacts,
     (candidate) => candidate.language === 'java' && candidate.name === 'StringUtils' && candidate.members.length >= 2,
     'Java StringUtils utility',
   );
-  const tsUtility = findCompatibilityCandidate(
-    compatibilityDryRun.candidates.utility_artifacts,
+  const tsUtility = findDecisionFinding(
+    groupedFindings.utility_artifacts,
     (candidate) => candidate.language === 'typescript' && candidate.source_anchor.path === 'src/utils/request.ts',
     'TypeScript request utility',
   );
-  const ignoredUtility = findCompatibilityCandidate(
-    compatibilityDryRun.candidates.utility_artifacts,
+  const ignoredUtility = findDecisionFinding(
+    groupedFindings.utility_artifacts,
     (candidate) => candidate.source_anchor.path === 'src/utils/legacy.ts',
     'ignored TypeScript legacy utility',
   );
-  const externalUsage = findCompatibilityCandidate(
-    compatibilityDryRun.candidates.observed_external_usages,
+  const externalUsage = findDecisionFinding(
+    groupedFindings.observed_external_usages,
     (candidate) => candidate.origin_key === '@vueuse/core' && candidate.call_text?.includes('useDebounceFn'),
     'VueUse observed external usage',
   );
-  const templatePattern = findCompatibilityCandidate(
-    compatibilityDryRun.candidates.template_patterns,
+  const templatePattern = findDecisionFinding(
+    groupedFindings.template_patterns,
     (candidate) => candidate.pattern_key === 'typescript-api-client-request' && candidate.instance_count >= candidate.threshold,
     'TypeScript API request template',
   );
@@ -471,13 +468,13 @@ function selectFixtureCompatibilityCandidates(compatibilityDryRun) {
   };
 }
 
-function selectDeferredCompatibilityCandidate(compatibilityDryRun, acceptedIds, ignoredCandidateId) {
-  const remaining = allCompatibilityCandidates(compatibilityDryRun)
+function selectDeferredFinding(findingsPayload, acceptedIds, ignoredCandidateId) {
+  const remaining = allDecisionFindings(findingsPayload)
     .filter((candidate) => !acceptedIds.has(candidate.candidate_id) && candidate.candidate_id !== ignoredCandidateId);
   const preferred = remaining.find((candidate) => candidate.candidate_type === 'utility_artifact')
     ?? remaining.find((candidate) => candidate.candidate_type === 'observed_external_usage')
     ?? remaining[0];
-  assert(preferred, 'Fixture must include a second nonaccepted compatibility record for deferred traceability');
+  assert(preferred, 'Fixture must include a second nonaccepted Finding for deferred traceability');
   return preferred;
 }
 
@@ -566,24 +563,15 @@ function assertPreclassificationReason(items, reason, predicate, label) {
 
 function reviewedDecisionFile(decisions) {
   const reviewed = JSON.parse(JSON.stringify(decisions));
-  delete reviewed.candidates;
-  delete reviewed.decisions;
   return reviewed;
 }
 
-function buildDecisions(dryRun, acceptedCandidates) {
+function buildDecisions(findingsPayload, acceptedCandidates) {
   const acceptedIds = new Set(acceptedCandidates.map((candidate) => candidate.candidate_id));
-  const decisionOverrides = Object.fromEntries(allCompatibilityCandidates(dryRun).map((candidate) => [
-    candidate.candidate_id,
-    {
-      action: 'ignore',
-      reason: 'Fixture regression intentionally leaves this compatibility record out of the index.',
-    },
-  ]));
+  const finalizerDecisions = new Map();
 
   for (const candidate of acceptedCandidates) {
-    decisionOverrides[candidate.candidate_id] = {
-      action: 'accept',
+    finalizerDecisions.set(candidate.candidate_id, {
       summary: `Fixture-approved ${candidate.candidate_type.replace(/_/g, ' ')}.`,
       usage_notes: candidate.candidate_type === 'observed_external_usage'
         ? undefined
@@ -597,7 +585,7 @@ function buildDecisions(dryRun, acceptedCandidates) {
       origin_priority: candidate.origin === 'external'
         ? { priority: 80, reason: 'Fixture project already uses this external utility.' }
         : { priority: 100, reason: 'Project-owned fixture utility.' },
-    };
+    });
   }
 
   const accepted = {
@@ -607,7 +595,7 @@ function buildDecisions(dryRun, acceptedCandidates) {
   };
 
   for (const candidate of acceptedCandidates) {
-    const entry = finalAcceptedEntry(candidate, decisionOverrides[candidate.candidate_id]);
+    const entry = finalAcceptedEntry(candidate, finalizerDecisions.get(candidate.candidate_id));
     const entryKey = fixtureEntryKey(candidate);
     if (candidate.candidate_type === 'utility_artifact') {
       accepted.utility_artifacts[entryKey] = entry;
@@ -619,16 +607,18 @@ function buildDecisions(dryRun, acceptedCandidates) {
   }
 
   return {
-    scan: dryRun.scan,
+    kind: 'tool_catalog_discovery_decisions',
+    version: 1,
+    scan: findingsPayload.scan,
     accepted,
-    ignored_candidates: allCompatibilityCandidates(dryRun)
-      .filter((candidate) => !acceptedIds.has(candidate.candidate_id) && decisionOverrides[candidate.candidate_id].action === 'ignore')
+    suppressions: allDecisionFindings(findingsPayload)
+      .filter((candidate) => !acceptedIds.has(candidate.candidate_id))
       .map((candidate) => ({
-        candidate_id: candidate.candidate_id,
-        candidate_type: candidate.candidate_type,
+        finding_id: candidate.finding_id,
+        finding_type: candidate.finding_type,
         source_anchor: candidateTraceAnchor(candidate),
         discovery_fingerprint: candidate.discovery_fingerprint,
-        reason: decisionOverrides[candidate.candidate_id].reason,
+        reason: 'Fixture regression intentionally leaves this Finding out of the index.',
       })),
   };
 }
@@ -676,17 +666,16 @@ try {
   const fullDryRunArtifacts = assertDiscoveryRunFiles(fullDryRun, catalogHome, projectRoot, 'full dry-run');
   assert.equal(statSync(fullDryRun.project.catalog_path).mtimeMs, dbMtimeBeforeDryRun, 'Dry-run must not mutate the project catalog SQLite file');
 
-  const compatibilityDryRun = decorateCompatibilityProjectionWithFingerprints(fullDryRunArtifacts);
   const {
     javaUtility,
     tsUtility,
     ignoredUtility,
     externalUsage,
     templatePattern,
-  } = selectFixtureCompatibilityCandidates(compatibilityDryRun);
+  } = selectFixtureFindings(fullDryRunArtifacts.findings);
 
   assert(ignoredUtility, 'Ignored fixture candidate must exist');
-  assert(!compatibilityDryRun.candidates.template_patterns.some((candidate) => candidate.pattern_key === 'vue3-element-plus-table-page'), 'Single Vue table page must stay below template threshold');
+  assert(!fullDryRunArtifacts.findings.findings.template_patterns.some((finding) => finding.pattern_key === 'vue3-element-plus-table-page'), 'Single Vue table page must stay below template threshold');
 
   const changedBelowThreshold = runCliJson([
     'discover',
@@ -720,7 +709,7 @@ try {
   assertTargetProjectClean(projectRoot);
 
   const missingTagsPath = path.join(tempRoot, 'missing-tags-decisions.json');
-  const missingTagsDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const missingTagsDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   delete missingTagsDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].capability_tags;
   writeFileSync(missingTagsPath, `${JSON.stringify(reviewedDecisionFile(missingTagsDecisions), null, 2)}\n`, 'utf8');
   const missingTagsApply = runCli(['discover', '--apply', missingTagsPath, '--root', projectRoot], {
@@ -730,7 +719,7 @@ try {
   assert(missingTagsApply.stderr.includes('capability_tags'), 'Apply must reject accepted utility artifacts without tags');
 
   const missingSummaryPath = path.join(tempRoot, 'missing-summary-decisions.json');
-  const missingSummaryDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const missingSummaryDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   delete missingSummaryDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].summary;
   writeFileSync(missingSummaryPath, `${JSON.stringify(reviewedDecisionFile(missingSummaryDecisions), null, 2)}\n`, 'utf8');
   const missingSummaryApply = runCli(['discover', '--apply', missingSummaryPath, '--root', projectRoot], {
@@ -740,7 +729,7 @@ try {
   assert(missingSummaryApply.stderr.includes('summary'), 'Apply must reject accepted utility artifacts without summary');
 
   const missingSourceAnchorPath = path.join(tempRoot, 'missing-source-anchor-decisions.json');
-  const missingSourceAnchorDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const missingSourceAnchorDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   delete missingSourceAnchorDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].source_anchor;
   writeFileSync(missingSourceAnchorPath, `${JSON.stringify(reviewedDecisionFile(missingSourceAnchorDecisions), null, 2)}\n`, 'utf8');
   const missingSourceAnchorApply = runCli(['discover', '--apply', missingSourceAnchorPath, '--root', projectRoot], {
@@ -750,7 +739,7 @@ try {
   assert(missingSourceAnchorApply.stderr.includes('source_anchor'), 'Apply must reject accepted utility artifacts without source anchors');
 
   const missingMembersPath = path.join(tempRoot, 'missing-members-decisions.json');
-  const missingMembersDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const missingMembersDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   missingMembersDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].members = [];
   writeFileSync(missingMembersPath, `${JSON.stringify(reviewedDecisionFile(missingMembersDecisions), null, 2)}\n`, 'utf8');
   const missingMembersApply = runCli(['discover', '--apply', missingMembersPath, '--root', projectRoot], {
@@ -760,7 +749,7 @@ try {
   assert(missingMembersApply.stderr.includes('at least one member'), 'Apply must reject accepted utility artifacts without reusable members');
 
   const missingTemplateInstancesPath = path.join(tempRoot, 'missing-template-instances-decisions.json');
-  const missingTemplateInstancesDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const missingTemplateInstancesDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   missingTemplateInstancesDecisions.accepted.template_patterns[fixtureEntryKey(templatePattern)].instances = [];
   writeFileSync(missingTemplateInstancesPath, `${JSON.stringify(reviewedDecisionFile(missingTemplateInstancesDecisions), null, 2)}\n`, 'utf8');
   const missingTemplateInstancesApply = runCli(['discover', '--apply', missingTemplateInstancesPath, '--root', projectRoot], {
@@ -770,7 +759,7 @@ try {
   assert(missingTemplateInstancesApply.stderr.includes('representative instances'), 'Apply must reject accepted template patterns without representative instances');
 
   const mismatchedArtifactKeyPath = path.join(tempRoot, 'mismatched-artifact-key-decisions.json');
-  const mismatchedArtifactKeyDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const mismatchedArtifactKeyDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   mismatchedArtifactKeyDecisions.accepted.utility_artifacts[fixtureEntryKey(javaUtility)].artifact_key = 'artifact:conflicting-utility-key';
   writeFileSync(mismatchedArtifactKeyPath, `${JSON.stringify(reviewedDecisionFile(mismatchedArtifactKeyDecisions), null, 2)}\n`, 'utf8');
   const mismatchedArtifactKeyApply = runCli(['discover', '--apply', mismatchedArtifactKeyPath, '--root', projectRoot], {
@@ -780,7 +769,7 @@ try {
   assert(mismatchedArtifactKeyApply.stderr.includes('artifact_key aligned with the map key'), 'Apply must reject accepted utility artifacts whose payload artifact_key conflicts with the map key');
 
   const mismatchedTemplateKeyPath = path.join(tempRoot, 'mismatched-template-key-decisions.json');
-  const mismatchedTemplateKeyDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const mismatchedTemplateKeyDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   mismatchedTemplateKeyDecisions.accepted.template_patterns[fixtureEntryKey(templatePattern)].pattern_key = 'template:conflicting-template-key';
   writeFileSync(mismatchedTemplateKeyPath, `${JSON.stringify(reviewedDecisionFile(mismatchedTemplateKeyDecisions), null, 2)}\n`, 'utf8');
   const mismatchedTemplateKeyApply = runCli(['discover', '--apply', mismatchedTemplateKeyPath, '--root', projectRoot], {
@@ -790,7 +779,7 @@ try {
   assert(mismatchedTemplateKeyApply.stderr.includes('pattern_key aligned with the map key'), 'Apply must reject accepted template patterns whose payload pattern_key conflicts with the map key');
 
   const mismatchedUsageKeyPath = path.join(tempRoot, 'mismatched-usage-key-decisions.json');
-  const mismatchedUsageKeyDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const mismatchedUsageKeyDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   mismatchedUsageKeyDecisions.accepted.observed_external_usages[fixtureEntryKey(externalUsage)].usage_key = 'external:conflicting-usage-key';
   writeFileSync(mismatchedUsageKeyPath, `${JSON.stringify(reviewedDecisionFile(mismatchedUsageKeyDecisions), null, 2)}\n`, 'utf8');
   const mismatchedUsageKeyApply = runCli(['discover', '--apply', mismatchedUsageKeyPath, '--root', projectRoot], {
@@ -799,16 +788,26 @@ try {
   });
   assert(mismatchedUsageKeyApply.stderr.includes('usage_key aligned with the map key'), 'Apply must reject accepted external usages whose payload usage_key conflicts with the map key');
 
-  const decisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  const legacyDecisionsPath = path.join(tempRoot, 'legacy-decisions.json');
+  const legacyDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
+  legacyDecisions.ignored_candidates = [];
+  writeFileSync(legacyDecisionsPath, `${JSON.stringify(reviewedDecisionFile(legacyDecisions), null, 2)}\n`, 'utf8');
+  const legacyDecisionsApply = runCli(['discover', '--apply', legacyDecisionsPath, '--root', projectRoot], {
+    catalogHome,
+    expect: 2,
+  });
+  assert(legacyDecisionsApply.stderr.includes("field 'ignored_candidates' is no longer supported"), 'Apply must reject legacy candidate-centric decision fields');
+
+  const decisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, externalUsage, templatePattern]);
   const acceptedIds = new Set([javaUtility, tsUtility, externalUsage, templatePattern].map((candidate) => candidate.candidate_id));
-  const deferredCandidate = selectDeferredCompatibilityCandidate(compatibilityDryRun, acceptedIds, ignoredUtility.candidate_id);
-  decisions.ignored_candidates = decisions.ignored_candidates.filter((candidate) => candidate.candidate_id !== deferredCandidate.candidate_id);
-  decisions.deferred_candidates = [{
-    candidate_id: deferredCandidate.candidate_id,
-    candidate_type: deferredCandidate.candidate_type,
+  const deferredCandidate = selectDeferredFinding(fullDryRunArtifacts.findings, acceptedIds, ignoredUtility.candidate_id);
+  decisions.suppressions = decisions.suppressions.filter((candidate) => candidate.finding_id !== deferredCandidate.candidate_id);
+  decisions.deferrals = [{
+    finding_id: deferredCandidate.finding_id,
+    finding_type: deferredCandidate.finding_type,
     source_anchor: candidateTraceAnchor(deferredCandidate),
     discovery_fingerprint: deferredCandidate.discovery_fingerprint,
-    reason: 'Fixture regression keeps this candidate deferred for user review.',
+    reason: 'Fixture regression keeps this Finding deferred for user review.',
   }];
   writeFileSync(decisionsPath, `${JSON.stringify(reviewedDecisionFile(decisions), null, 2)}\n`, 'utf8');
 
@@ -817,8 +816,8 @@ try {
   assert.equal(applySummary.decisions.accepted_utility_artifacts, 2);
   assert.equal(applySummary.decisions.accepted_observed_external_usages, 1);
   assert.equal(applySummary.decisions.accepted_template_patterns, 1);
-  assert(applySummary.decisions.ignored_candidates > 0, 'Apply must persist ignored candidates');
-  assert.equal(applySummary.decisions.deferred_candidates, 1);
+  assert(applySummary.decisions.suppressions > 0, 'Apply must persist suppressions');
+  assert.equal(applySummary.decisions.deferrals, 1);
   assert(applySummary.counts.after.ignored_candidates > 0, 'Ignored candidates must be present in SQLite counts');
   assert.equal(applySummary.counts.after.deferred_candidates, 1, 'Deferred candidates must be present in SQLite counts');
   assert(applySummary.counts.after.member_signatures > 0, 'Member signatures must be present in SQLite counts');
@@ -845,7 +844,7 @@ try {
   );
   assert.equal(
     storedFingerprintRows.length,
-    4 + applySummary.decisions.ignored_candidates + applySummary.decisions.deferred_candidates,
+    4 + applySummary.decisions.suppressions + applySummary.decisions.deferrals,
     'Initial apply must persist structural fingerprints for accepted entries, suppressions, and deferrals',
   );
 
@@ -857,33 +856,32 @@ try {
   runCliJson(['config', 'project-id', 'fixture-preclassification', '--root', preclassProjectRoot], { catalogHome: preclassCatalogHome });
   const preclassFullDryRun = runCliJson(['discover', '--full', '--dry-run', '--root', preclassProjectRoot], { catalogHome: preclassCatalogHome });
   const preclassArtifacts = assertDiscoveryRunFiles(preclassFullDryRun, preclassCatalogHome, preclassProjectRoot, 'preclassification seed dry-run');
-  const preclassCompatibility = decorateCompatibilityProjectionWithFingerprints(preclassArtifacts);
-  const preclassCandidates = selectFixtureCompatibilityCandidates(preclassCompatibility);
+  const preclassCandidates = selectFixtureFindings(preclassArtifacts.findings);
   const preclassAcceptedIds = new Set([
     preclassCandidates.javaUtility,
     preclassCandidates.tsUtility,
     preclassCandidates.externalUsage,
     preclassCandidates.templatePattern,
   ].map((candidate) => candidate.candidate_id));
-  const preclassDeferredCandidate = selectDeferredCompatibilityCandidate(
-    preclassCompatibility,
+  const preclassDeferredCandidate = selectDeferredFinding(
+    preclassArtifacts.findings,
     preclassAcceptedIds,
     preclassCandidates.ignoredUtility.candidate_id,
   );
-  const preclassDecisions = buildDecisions(preclassCompatibility, [
+  const preclassDecisions = buildDecisions(preclassArtifacts.findings, [
     preclassCandidates.javaUtility,
     preclassCandidates.tsUtility,
     preclassCandidates.externalUsage,
     preclassCandidates.templatePattern,
   ]);
-  preclassDecisions.ignored_candidates = preclassDecisions.ignored_candidates
-    .filter((candidate) => candidate.candidate_id !== preclassDeferredCandidate.candidate_id);
-  preclassDecisions.deferred_candidates = [{
-    candidate_id: preclassDeferredCandidate.candidate_id,
-    candidate_type: preclassDeferredCandidate.candidate_type,
+  preclassDecisions.suppressions = preclassDecisions.suppressions
+    .filter((candidate) => candidate.finding_id !== preclassDeferredCandidate.candidate_id);
+  preclassDecisions.deferrals = [{
+    finding_id: preclassDeferredCandidate.finding_id,
+    finding_type: preclassDeferredCandidate.finding_type,
     source_anchor: candidateTraceAnchor(preclassDeferredCandidate),
     discovery_fingerprint: preclassDeferredCandidate.discovery_fingerprint,
-    reason: 'Fixture preclassification keeps this candidate deferred for later review.',
+    reason: 'Fixture preclassification keeps this Finding deferred for later review.',
   }];
   writeFileSync(preclassDecisionsPath, `${JSON.stringify(reviewedDecisionFile(preclassDecisions), null, 2)}\n`, 'utf8');
   const preclassApplySummary = runCliJson(['discover', '--apply', preclassDecisionsPath, '--root', preclassProjectRoot], { catalogHome: preclassCatalogHome });
@@ -894,7 +892,7 @@ try {
   assert.equal(unchangedPreclass.preclassification.record_counts.deferrals, 1, 'Preclassification must persist deferred fingerprints');
   assert.equal(
     unchangedPreclass.preclassification.record_counts.suppressions,
-    preclassApplySummary.decisions.ignored_candidates,
+    preclassApplySummary.decisions.suppressions,
     'Preclassification must persist suppression fingerprints',
   );
   assert.equal(unchangedPreclass.preclassification.finding_counts.review_queue, 0, 'Unchanged reruns must not resend persisted evidence to worker review');
@@ -902,7 +900,7 @@ try {
   assert.equal(unchangedPreclass.preclassification.finding_counts.unchanged_catalog_entries, 4, 'Accepted entries must classify as unchanged');
   assert.equal(
     unchangedPreclass.preclassification.finding_counts.unchanged_suppressions,
-    preclassApplySummary.decisions.ignored_candidates,
+    preclassApplySummary.decisions.suppressions,
     'Suppressed findings must classify as unchanged suppressions',
   );
   assert.equal(unchangedPreclass.preclassification.finding_counts.unchanged_deferrals, 1, 'Deferred findings must classify as unchanged deferrals');
@@ -916,23 +914,22 @@ try {
   runCliJson(['config', 'project-id', 'fixture-stale-deferral', '--root', staleDeferralProjectRoot], { catalogHome: staleDeferralCatalogHome });
   const staleDeferralSeedDryRun = runCliJson(['discover', '--full', '--dry-run', '--root', staleDeferralProjectRoot], { catalogHome: staleDeferralCatalogHome });
   const staleDeferralArtifacts = assertDiscoveryRunFiles(staleDeferralSeedDryRun, staleDeferralCatalogHome, staleDeferralProjectRoot, 'stale deferral seed dry-run');
-  const staleDeferralCompatibility = decorateCompatibilityProjectionWithFingerprints(staleDeferralArtifacts);
-  const staleDeferralCandidates = selectFixtureCompatibilityCandidates(staleDeferralCompatibility);
+  const staleDeferralCandidates = selectFixtureFindings(staleDeferralArtifacts.findings);
   const staleDeferredCandidate = staleDeferralCandidates.ignoredUtility;
-  const staleDeferralDecisions = buildDecisions(staleDeferralCompatibility, [
+  const staleDeferralDecisions = buildDecisions(staleDeferralArtifacts.findings, [
     staleDeferralCandidates.javaUtility,
     staleDeferralCandidates.tsUtility,
     staleDeferralCandidates.externalUsage,
     staleDeferralCandidates.templatePattern,
   ]);
-  staleDeferralDecisions.ignored_candidates = staleDeferralDecisions.ignored_candidates
-    .filter((candidate) => candidate.candidate_id !== staleDeferredCandidate.candidate_id);
-  staleDeferralDecisions.deferred_candidates = [{
-    candidate_id: staleDeferredCandidate.candidate_id,
-    candidate_type: staleDeferredCandidate.candidate_type,
+  staleDeferralDecisions.suppressions = staleDeferralDecisions.suppressions
+    .filter((candidate) => candidate.finding_id !== staleDeferredCandidate.candidate_id);
+  staleDeferralDecisions.deferrals = [{
+    finding_id: staleDeferredCandidate.finding_id,
+    finding_type: staleDeferredCandidate.finding_type,
     source_anchor: candidateTraceAnchor(staleDeferredCandidate),
     discovery_fingerprint: staleDeferredCandidate.discovery_fingerprint,
-    reason: 'Fixture regression keeps this candidate deferred until it changes.',
+    reason: 'Fixture regression keeps this Finding deferred until it changes.',
   }];
   writeFileSync(staleDeferralDecisionsPath, `${JSON.stringify(reviewedDecisionFile(staleDeferralDecisions), null, 2)}\n`, 'utf8');
   runCliJson(['discover', '--apply', staleDeferralDecisionsPath, '--root', staleDeferralProjectRoot], { catalogHome: staleDeferralCatalogHome });
@@ -985,7 +982,7 @@ try {
     'Missing-source deferred evidence must be reported for cleanup',
   );
 
-  const replayDecisions = buildDecisions(compatibilityDryRun, [javaUtility, tsUtility, ignoredUtility, deferredCandidate, externalUsage, templatePattern]);
+  const replayDecisions = buildDecisions(fullDryRunArtifacts.findings, [javaUtility, tsUtility, ignoredUtility, deferredCandidate, externalUsage, templatePattern]);
   writeFileSync(decisionsPath, `${JSON.stringify(reviewedDecisionFile(replayDecisions), null, 2)}\n`, 'utf8');
   const replaySummary = runCliJson(['discover', '--apply', decisionsPath, '--root', projectRoot], { catalogHome });
   assert.equal(replaySummary.index_mutated, true);

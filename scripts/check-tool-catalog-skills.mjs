@@ -26,12 +26,12 @@ const toolCatalogSkills = [
 
 const discoveryTerminologyDocs = [
   'docs/adr/0034-store-discovery-run-files-in-user-cache.md',
-  'docs/agent-orchestrated-discovery-workflow.md',
 ];
 
 const disallowedDiscoveryArtifactPhrases = [
   /\bDiscovery candidate data\b/i,
   /\bfull candidate data\b/i,
+  /\bcompat-candidates\.json\b/i,
 ];
 
 const documentedCommands = [
@@ -120,7 +120,6 @@ function checkSkillFrontmatter() {
 function checkToolCatalogSkillDocs() {
   const discover = readFileSync(path.join(skillsDir, 'tool-catalog-discover/SKILL.md'), 'utf8');
   const consult = readFileSync(path.join(skillsDir, 'tool-catalog-consult/SKILL.md'), 'utf8');
-  const workflow = readFileSync(path.join(repoRoot, 'docs/agent-orchestrated-discovery-workflow.md'), 'utf8');
 
   for (const skillName of toolCatalogSkills) {
     const text = readFileSync(path.join(skillsDir, skillName, 'SKILL.md'), 'utf8');
@@ -286,127 +285,6 @@ function checkToolCatalogSkillDocs() {
     }
   }
 
-  assertOrderedIncludes(
-    workflow,
-    [
-      '-> Evidence Harvest',
-      '-> Shard Planner Workers',
-      '-> Chunk Planner Workers',
-      '-> Shard Review Workers',
-      '-> Shard Aggregator Workers',
-      '-> Cross-Shard Merge Workers',
-      '-> Catalog Finalizer Workers',
-      '-> Decision Review Worker',
-      '-> Apply/Verify Worker',
-    ],
-    'agent-orchestrated discovery workflow DAG',
-  );
-  assertIncludes(
-    workflow,
-    'The main agent is the only dispatcher.',
-    'agent-orchestrated discovery workflow main-agent-only dispatch',
-  );
-  assertIncludes(
-    workflow,
-    'Workers must not spawn subagents.',
-    'agent-orchestrated discovery workflow worker dispatch boundary',
-  );
-  assertIncludes(
-    workflow,
-    'Workers may write work plans, child briefs, structured artifacts, and minimal status files.',
-    'agent-orchestrated discovery workflow worker artifact boundary',
-  );
-  assertIncludes(
-    workflow,
-    'Every shard or chunk work item must include `work_item_id`, `role`, `depends_on`, `brief`, `inputs`, `outputs`, and `coverage` exactly once.',
-    'agent-orchestrated discovery workflow work plan contract',
-  );
-  assertIncludes(
-    workflow,
-    'Oversized dry-runs must be planned as `harvest manifest/index -> Shard Planner -> Chunk Planner when a shard stays oversized -> bounded shard/chunk review inputs -> Shard Aggregator -> Cross-Shard Merge`; they must not be handed to one oversized worker prompt.',
-    'agent-orchestrated discovery workflow oversized planning chain',
-  );
-  assertIncludes(
-    workflow,
-    'Chunk Planner Workers recurse only by emitting smaller bounded child work items for the same shard.',
-    'agent-orchestrated discovery workflow chunk recursion contract',
-  );
-  assertIncludes(
-    workflow,
-    'Must not emit semantic accept/reject/defer decisions.',
-    'agent-orchestrated discovery workflow shard review decision boundary',
-  );
-  assertIncludes(
-    workflow,
-    'Must not write Catalog Entries, Suppressions, Deferrals, or final prose fields.',
-    'agent-orchestrated discovery workflow shard review semantic boundary',
-  );
-  assertIncludes(
-    workflow,
-    'Block downstream handoff when coverage accounting shows missing or duplicate Finding coverage.',
-    'agent-orchestrated discovery workflow coverage gate',
-  );
-  assertIncludes(
-    workflow,
-    'Consume shard aggregates only; they must not read oversized raw harvest payloads directly.',
-    'agent-orchestrated discovery workflow shard merge boundary',
-  );
-  assertIncludes(
-    workflow,
-    'Perform mandatory local gap audit for every Review Group considered for acceptance before finalizing decisions.',
-    'agent-orchestrated discovery workflow finalizer gap audit gate',
-  );
-  assertIncludes(
-    workflow,
-    'Own source inspection, semantic decisions, suppressions, deferrals, and Discovery Decision File generation.',
-    'agent-orchestrated discovery workflow finalizer responsibilities',
-  );
-  assertIncludes(
-    workflow,
-    'Must not modify the Discovery Decision File.',
-    'agent-orchestrated discovery workflow decision review immutability',
-  );
-  assertIncludes(
-    workflow,
-    'Returns one of three outcomes:',
-    'agent-orchestrated discovery workflow decision review outcomes',
-  );
-  assertIncludes(
-    workflow,
-    'Pass: continue to apply unless the user requested review-only mode.',
-    'agent-orchestrated discovery workflow pass outcome',
-  );
-  assertIncludes(
-    workflow,
-    'Repair needed: send concrete defects to a Finalizer Repair Worker, then re-run review.',
-    'agent-orchestrated discovery workflow repair outcome',
-  );
-  assertIncludes(
-    workflow,
-    'Blocking decision needed: route through explicit user decision, then a Decision Incorporation Worker, before re-review.',
-    'agent-orchestrated discovery workflow blocking outcome',
-  );
-  assertIncludes(
-    workflow,
-    'Repair needed: send concrete defects to a Finalizer Repair Worker, then re-run review.',
-    'agent-orchestrated discovery workflow repair gate',
-  );
-  assertIncludes(
-    workflow,
-    'Blocking decision needed: route through explicit user decision, then a Decision Incorporation Worker, before re-review.',
-    'agent-orchestrated discovery workflow blocking decision gate',
-  );
-  assertIncludes(
-    workflow,
-    '### 7a. Finalizer Repair Worker',
-    'agent-orchestrated discovery workflow finalizer repair section',
-  );
-  assertIncludes(
-    workflow,
-    '### 7b. Decision Incorporation Worker',
-    'agent-orchestrated discovery workflow decision incorporation section',
-  );
-
   for (const expected of [
     'tool-catalog tags --root <project>',
     'query --tag <tag>',
@@ -427,6 +305,7 @@ function checkDocumentedCommandAvailability() {
   const readme = readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
   const discover = readFileSync(path.join(skillsDir, 'tool-catalog-discover/SKILL.md'), 'utf8');
   const consult = readFileSync(path.join(skillsDir, 'tool-catalog-consult/SKILL.md'), 'utf8');
+  const cliSource = readFileSync(cliPath, 'utf8');
   const documentedText = `${readme}\n${discover}\n${consult}`;
   const help = run(process.execPath, [cliPath, '--help']).stdout;
 
@@ -434,11 +313,14 @@ function checkDocumentedCommandAvailability() {
     assertIncludes(documentedText, command, 'Tool Catalog documentation');
   }
 
-  assertIncludes(readme, 'Discovery Review Pack', 'README Tool Catalog workflow');
+  assertIncludes(readme, 'Evidence Harvest', 'README Tool Catalog workflow');
+  assertIncludes(readme, 'finding-manifest.json', 'README Tool Catalog workflow');
+  assertIncludes(readme, 'worker DAG', 'README Tool Catalog workflow');
   assertIncludes(readme, 'Discovery Decision File', 'README Tool Catalog workflow');
   assertIncludes(readme, 'Capability Tag Vocabulary', 'README Tool Catalog workflow');
   assertIncludes(readme, 'exact `--tag` filters', 'README Tool Catalog workflow');
   assert(!readme.includes('Planned Capability Tag command surface'), 'README must describe implemented Tool Catalog commands, not planned placeholders');
+  assert(!cliSource.includes('compat-candidates.json'), 'CLI must not emit legacy compatibility discovery artifacts');
 
   for (const expected of [
     'doctor',

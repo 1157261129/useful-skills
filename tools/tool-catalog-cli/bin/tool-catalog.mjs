@@ -145,6 +145,16 @@ const CANDIDATE_GROUPS = [
   'observed_external_usages',
   'template_patterns',
 ];
+const LEGACY_DECISION_FIELDS = [
+  'candidates',
+  'decisions',
+  'accepted_entries',
+  'accepted_utility_artifacts',
+  'accepted_observed_external_usages',
+  'accepted_template_patterns',
+  'ignored_candidates',
+  'deferred_candidates',
+];
 const CATALOG_COUNT_KEYS = [
   'utility_origins',
   'origin_priorities',
@@ -3086,16 +3096,6 @@ function buildDiscoveryDryRun(context, discoverOptions) {
       finding_counts: findingCounts,
       items: allDiscoveryFindings(deduped.findings).map((finding) => buildFindingIndexItem(finding)),
     },
-    compatibility_payload: {
-      kind: 'tool_catalog_discovery_candidate_compat',
-      version: 1,
-      generated_at: generatedAt,
-      dry_run: true,
-      index_mutated: false,
-      project,
-      scan,
-      candidates,
-    },
   };
 }
 
@@ -3126,7 +3126,6 @@ function discoveryRunFilePaths(context, summary, findingsPayload) {
     findings_path: path.join(runDirectory, 'findings.json'),
     finding_index_path: path.join(runDirectory, 'finding-index.json'),
     finding_manifest_path: path.join(runDirectory, 'finding-manifest.json'),
-    compatibility_candidates_path: path.join(runDirectory, 'compat-candidates.json'),
   };
 }
 
@@ -3182,10 +3181,6 @@ function writeDiscoveryRunFiles(context, draft) {
     run_files: runFiles,
   });
   writeJsonRunFile(runFiles.finding_manifest_path, manifest);
-  writeJsonRunFile(runFiles.compatibility_candidates_path, {
-    ...draft.compatibility_payload,
-    run_files: runFiles,
-  });
 
   return output;
 }
@@ -3289,98 +3284,12 @@ function candidateTypeForGroup(groupName) {
   return null;
 }
 
-function collectCandidateArray(value, groupName, candidates) {
-  if (!value) {
-    return;
-  }
-  if (!Array.isArray(value)) {
-    throw new ToolCatalogError(`Discovery decisions field '${groupName}' must be an array.`, 2);
-  }
-
-  const impliedType = candidateTypeForGroup(groupName);
-  for (const candidate of value) {
-    if (!isPlainObject(candidate)) {
-      throw new ToolCatalogError(`Discovery candidate in '${groupName}' must be an object.`, 2);
-    }
-    candidates.push({
-      ...candidate,
-      candidate_type: candidate.candidate_type ?? impliedType,
-    });
-  }
-}
-
-function collectApplyCandidates(input) {
-  const candidates = [];
-
-  if (Array.isArray(input.candidates)) {
-    collectCandidateArray(input.candidates, 'candidates', candidates);
-  } else if (isPlainObject(input.candidates)) {
-    for (const groupName of CANDIDATE_GROUPS) {
-      collectCandidateArray(input.candidates[groupName], groupName, candidates);
+function assertNoLegacyDecisionFields(input) {
+  for (const fieldName of LEGACY_DECISION_FIELDS) {
+    if (Object.hasOwn(input, fieldName)) {
+      throw new ToolCatalogError(`Discovery decisions field '${fieldName}' is no longer supported. Use accepted, suppressions, and deferrals.`, 2);
     }
   }
-
-  for (const groupName of CANDIDATE_GROUPS) {
-    collectCandidateArray(input[groupName], groupName, candidates);
-  }
-
-  const byId = new Map();
-  for (const candidate of candidates) {
-    const candidateId = normalizeNullableString(candidate.candidate_id);
-    if (!candidateId) {
-      throw new ToolCatalogError('Every discovery candidate must include candidate_id.', 2);
-    }
-    byId.set(candidateId, {
-      ...candidate,
-      candidate_id: candidateId,
-    });
-  }
-
-  return byId;
-}
-
-function normalizeDecisionAction(value) {
-  const action = normalizeNullableString(value)?.toLowerCase() ?? null;
-  if (!action) {
-    return null;
-  }
-  if (!DECISION_ACTIONS.has(action)) {
-    throw new ToolCatalogError(`Unsupported discovery decision action '${value}'. Use accept, ignore, or defer.`, 2);
-  }
-
-  return action;
-}
-
-function parseDecisionOverrides(decisions) {
-  const overrides = new Map();
-  if (!decisions) {
-    return overrides;
-  }
-
-  const items = Array.isArray(decisions)
-    ? decisions
-    : Object.entries(decisions).map(([candidateId, decision]) => {
-      if (typeof decision === 'string') {
-        return { candidate_id: candidateId, action: decision };
-      }
-      if (isPlainObject(decision)) {
-        return { ...decision, candidate_id: decision.candidate_id ?? candidateId };
-      }
-      throw new ToolCatalogError(`Decision override for ${candidateId} must be a string or object.`, 2);
-    });
-
-  for (const item of items) {
-    if (!isPlainObject(item)) {
-      throw new ToolCatalogError('Each discovery decision override must be an object.', 2);
-    }
-    const candidateId = normalizeNullableString(item.candidate_id);
-    if (!candidateId) {
-      throw new ToolCatalogError('Each discovery decision override must include candidate_id.', 2);
-    }
-    overrides.set(candidateId, item);
-  }
-
-  return overrides;
 }
 
 function collectAcceptedEntryArray(value, groupName, entries) {
@@ -3394,9 +3303,15 @@ function collectAcceptedEntryArray(value, groupName, entries) {
       if (!isPlainObject(entry)) {
         throw new ToolCatalogError(`Accepted entry in '${groupName}' must be an object.`, 2);
       }
+      const entryType = entry.entry_type ?? entry.finding_type ?? impliedType;
       entries.push({
         ...entry,
-        candidate_type: entry.candidate_type ?? entry.entry_type ?? impliedType,
+        entry_type: entryType,
+        candidate_type: entryType,
+        candidate_id: normalizeNullableString(entry.finding_id)
+          ?? normalizeNullableString(entry.artifact_key)
+          ?? normalizeNullableString(entry.pattern_key)
+          ?? normalizeNullableString(entry.usage_key),
       });
     }
     return;
@@ -3420,8 +3335,8 @@ function collectAcceptedEntryArray(value, groupName, entries) {
           ? 'observed_external_usage'
           : null;
     const keyIdentity = selectorMatch?.[2] ?? entryKey;
-    const candidateType = entry.candidate_type
-      ?? entry.entry_type
+    const entryType = entry.entry_type
+      ?? entry.finding_type
       ?? selectorType
       ?? (Object.hasOwn(entry, 'artifact_key')
         ? 'utility_artifact'
@@ -3431,22 +3346,22 @@ function collectAcceptedEntryArray(value, groupName, entries) {
             ? 'observed_external_usage'
             : impliedType);
 
-    if (!candidateType) {
-      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' must include candidate_type, entry_type, or a typed key prefix.`, 2);
+    if (!entryType) {
+      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' must include entry_type or a typed key prefix.`, 2);
     }
-    if (selectorType && selectorType !== candidateType) {
-      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' uses selector type '${selectorType}' but declares candidate_type '${candidateType}'.`, 2);
+    if (selectorType && selectorType !== entryType) {
+      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' uses selector type '${selectorType}' but declares entry_type '${entryType}'.`, 2);
     }
 
-    const identityField = candidateType === 'utility_artifact'
+    const identityField = entryType === 'utility_artifact'
       ? 'artifact_key'
-      : candidateType === 'template_pattern'
+      : entryType === 'template_pattern'
         ? 'pattern_key'
-        : candidateType === 'observed_external_usage'
+        : entryType === 'observed_external_usage'
           ? 'usage_key'
           : null;
     if (!identityField) {
-      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' has unsupported candidate_type '${candidateType}'.`, 2);
+      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' has unsupported entry_type '${entryType}'.`, 2);
     }
 
     // 键控 accepted entry 的映射键就是最终 identity，payload 内同名字段只能显式重复，不能改写。
@@ -3457,25 +3372,27 @@ function collectAcceptedEntryArray(value, groupName, entries) {
 
     entries.push({
       ...entry,
-      candidate_type: candidateType,
-      artifact_key: candidateType === 'utility_artifact' ? keyIdentity : entry.artifact_key,
-      pattern_key: candidateType === 'template_pattern' ? keyIdentity : entry.pattern_key,
-      usage_key: candidateType === 'observed_external_usage' ? keyIdentity : entry.usage_key,
+      entry_type: entryType,
+      candidate_type: entryType,
+      candidate_id: normalizeNullableString(entry.finding_id) ?? keyIdentity,
+      artifact_key: entryType === 'utility_artifact' ? keyIdentity : entry.artifact_key,
+      pattern_key: entryType === 'template_pattern' ? keyIdentity : entry.pattern_key,
+      usage_key: entryType === 'observed_external_usage' ? keyIdentity : entry.usage_key,
     });
   }
 }
 
 function collectFinalAcceptedEntries(input) {
   const entries = [];
-  collectAcceptedEntryArray(input.accepted_entries, 'accepted_entries', entries);
-  collectAcceptedEntryArray(input.accepted_utility_artifacts, 'utility_artifacts', entries);
-  collectAcceptedEntryArray(input.accepted_observed_external_usages, 'observed_external_usages', entries);
-  collectAcceptedEntryArray(input.accepted_template_patterns, 'template_patterns', entries);
 
-  if (isPlainObject(input.accepted)) {
-    for (const groupName of CANDIDATE_GROUPS) {
-      collectAcceptedEntryArray(input.accepted[groupName], groupName, entries);
-    }
+  if (input.accepted === undefined) {
+    return entries;
+  }
+  if (!isPlainObject(input.accepted)) {
+    throw new ToolCatalogError("Discovery decisions field 'accepted' must be an object.", 2);
+  }
+  for (const groupName of CANDIDATE_GROUPS) {
+    collectAcceptedEntryArray(input.accepted[groupName], groupName, entries);
   }
 
   return entries;
@@ -3498,7 +3415,7 @@ function collectTraceableDecisionArray(value, fieldName) {
 }
 
 function finalAcceptedCandidateId(entry) {
-  return normalizeNullableString(entry.candidate_id)
+  return normalizeNullableString(entry.finding_id)
     ?? normalizeNullableString(entry.artifact_key)
     ?? normalizeNullableString(entry.pattern_key)
     ?? normalizeNullableString(entry.usage_key);
@@ -3905,17 +3822,20 @@ function firstCandidateAnchor(candidate) {
 }
 
 function normalizeIgnoredCandidate(candidate) {
-  const candidateId = normalizeNullableString(candidate.candidate_id);
-  const candidateType = normalizeNullableString(candidate.candidate_type) ?? 'unknown';
+  const candidateId = normalizeNullableString(candidate.finding_id);
+  if (!candidateId) {
+    throw new ToolCatalogError('Each suppression must include finding_id.', 2);
+  }
+  const candidateType = normalizeNullableString(candidate.finding_type) ?? 'unknown';
   const sourceAnchor = normalizeSourceAnchor(firstCandidateAnchor(candidate), candidateId, `${candidateId} source_anchor`);
 
   return {
     candidateId,
     candidateType,
-    artifactKey: normalizeNullableString(candidate.artifact_key ?? candidate.candidate_id),
+    artifactKey: normalizeNullableString(candidate.artifact_key ?? candidate.finding_id),
     patternKey: normalizeNullableString(candidate.pattern_key)
       ?? (candidateType === 'template_pattern' ? candidateId.replace(/^template-pattern:/, '') : null),
-    usageKey: normalizeNullableString(candidate.usage_key ?? candidate.candidate_id),
+    usageKey: normalizeNullableString(candidate.usage_key ?? candidate.finding_id),
     sourceAnchor,
     discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
     reason: truncateText(candidate.reason ?? candidate.ignore_reason ?? 'Ignored by discovery apply decision.', MAX_SUMMARY_CHARS),
@@ -3923,17 +3843,20 @@ function normalizeIgnoredCandidate(candidate) {
 }
 
 function normalizeDeferredCandidate(candidate) {
-  const candidateId = normalizeNullableString(candidate.candidate_id);
-  const candidateType = normalizeNullableString(candidate.candidate_type) ?? 'unknown';
+  const candidateId = normalizeNullableString(candidate.finding_id);
+  if (!candidateId) {
+    throw new ToolCatalogError('Each deferral must include finding_id.', 2);
+  }
+  const candidateType = normalizeNullableString(candidate.finding_type) ?? 'unknown';
   const sourceAnchor = normalizeSourceAnchor(firstCandidateAnchor(candidate), candidateId, `${candidateId} source_anchor`);
 
   return {
     candidateId,
     candidateType,
-    artifactKey: normalizeNullableString(candidate.artifact_key ?? candidate.candidate_id),
+    artifactKey: normalizeNullableString(candidate.artifact_key ?? candidate.finding_id),
     patternKey: normalizeNullableString(candidate.pattern_key)
       ?? (candidateType === 'template_pattern' ? candidateId.replace(/^template-pattern:/, '') : null),
-    usageKey: normalizeNullableString(candidate.usage_key ?? candidate.candidate_id),
+    usageKey: normalizeNullableString(candidate.usage_key ?? candidate.finding_id),
     sourceAnchor,
     discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
     reason: truncateText(candidate.reason ?? candidate.defer_reason ?? candidate.question ?? 'Deferred by discovery apply decision.', MAX_SUMMARY_CHARS),
@@ -4042,13 +3965,12 @@ function normalizeApplyDecisions(input) {
   if (input.failed === true || input.extraction_failed === true || input.status === 'failed') {
     throw new ToolCatalogError('Refusing to apply failed discovery or extraction results.', 2);
   }
+  assertNoLegacyDecisionFields(input);
 
   const scope = normalizeApplyScope(input);
-  const candidates = collectApplyCandidates(input);
-  const overrides = parseDecisionOverrides(input.decisions);
   const finalAcceptedEntries = collectFinalAcceptedEntries(input);
-  const ignoredDecisionEntries = collectTraceableDecisionArray(input.ignored_candidates, 'ignored_candidates');
-  const deferredDecisionEntries = collectTraceableDecisionArray(input.deferred_candidates, 'deferred_candidates');
+  const suppressionEntries = collectTraceableDecisionArray(input.suppressions, 'suppressions');
+  const deferralEntries = collectTraceableDecisionArray(input.deferrals, 'deferrals');
   const normalized = {
     scope,
     acceptedUtilities: [],
@@ -4062,7 +3984,6 @@ function normalizeApplyDecisions(input) {
     protectedTemplateKeys: new Set(),
     protectedExternalUsageKeys: new Set(),
   };
-  const resolvedCandidateIds = new Set();
 
   const protectCandidate = (candidateType, candidate) => {
     if (candidateType === 'utility_artifact') {
@@ -4077,13 +3998,12 @@ function normalizeApplyDecisions(input) {
   for (const entry of finalAcceptedEntries) {
     const candidateId = finalAcceptedCandidateId(entry);
     if (!candidateId) {
-      throw new ToolCatalogError('Each accepted entry must include candidate_id, artifact_key, pattern_key, or usage_key.', 2);
+      throw new ToolCatalogError('Each accepted entry must include artifact_key, pattern_key, usage_key, or finding_id.', 2);
     }
-    const rawCandidate = candidates.get(candidateId);
-    const merged = rawCandidate ? mergeCandidateDecision(rawCandidate, entry) : {
+    const merged = {
       ...entry,
       candidate_id: candidateId,
-      candidate_type: entry.candidate_type ?? entry.entry_type,
+      candidate_type: entry.candidate_type ?? entry.entry_type ?? entry.finding_type,
     };
 
     if (merged.candidate_type === 'utility_artifact') {
@@ -4101,116 +4021,18 @@ function normalizeApplyDecisions(input) {
     } else {
       throw new ToolCatalogError(`Unsupported accepted entry type '${merged.candidate_type}' for ${candidateId}.`, 2);
     }
-    resolvedCandidateIds.add(candidateId);
   }
 
-  for (const item of ignoredDecisionEntries) {
-    const candidateId = normalizeNullableString(item.candidate_id);
-    if (!candidateId) {
-      throw new ToolCatalogError('Each ignored candidate decision must include candidate_id.', 2);
-    }
-    const merged = candidates.has(candidateId) ? mergeCandidateDecision(candidates.get(candidateId), item) : item;
-    const ignored = normalizeIgnoredCandidate(merged);
+  for (const item of suppressionEntries) {
+    const ignored = normalizeIgnoredCandidate(item);
     normalized.ignoredCandidates.push(ignored);
     protectCandidate(ignored.candidateType, ignored);
-    resolvedCandidateIds.add(candidateId);
   }
 
-  for (const item of deferredDecisionEntries) {
-    const candidateId = normalizeNullableString(item.candidate_id);
-    if (!candidateId) {
-      throw new ToolCatalogError('Each deferred candidate decision must include candidate_id.', 2);
-    }
-    const merged = candidates.has(candidateId) ? mergeCandidateDecision(candidates.get(candidateId), item) : item;
-    const deferred = normalizeDeferredCandidate(merged);
+  for (const item of deferralEntries) {
+    const deferred = normalizeDeferredCandidate(item);
     normalized.deferredCandidates.push(deferred);
     protectCandidate(deferred.candidateType, deferred);
-    resolvedCandidateIds.add(candidateId);
-  }
-
-  for (const [candidateId, candidate] of candidates.entries()) {
-    if (resolvedCandidateIds.has(candidateId)) {
-      continue;
-    }
-    const decision = overrides.get(candidateId);
-    const merged = mergeCandidateDecision(candidate, decision);
-    const action = normalizeDecisionAction(decision?.action ?? candidate.action ?? candidate.decision);
-
-    if (action === 'accept') {
-      if (merged.candidate_type === 'utility_artifact') {
-        const artifact = normalizeUtilityArtifact(merged);
-        normalized.acceptedUtilities.push(artifact);
-        normalized.protectedUtilityKeys.add(artifact.artifactKey);
-      } else if (merged.candidate_type === 'template_pattern') {
-        const pattern = normalizeTemplatePattern(merged);
-        normalized.acceptedTemplates.push(pattern);
-        normalized.protectedTemplateKeys.add(pattern.patternKey);
-      } else if (merged.candidate_type === 'observed_external_usage') {
-        const usage = normalizeObservedExternalUsage(merged);
-        normalized.acceptedExternalUsages.push(usage);
-        normalized.protectedExternalUsageKeys.add(usage.usageKey);
-      } else {
-        throw new ToolCatalogError(`Unsupported accepted candidate_type '${merged.candidate_type}' for ${candidateId}.`, 2);
-      }
-      continue;
-    }
-
-    if (action === 'ignore') {
-      const ignored = normalizeIgnoredCandidate(merged);
-      normalized.ignoredCandidates.push(ignored);
-      protectCandidate(ignored.candidateType, ignored);
-      continue;
-    }
-
-    if (action === 'defer') {
-      const deferred = normalizeDeferredCandidate(merged);
-      normalized.deferredCandidates.push(deferred);
-      protectCandidate(deferred.candidateType, deferred);
-      continue;
-    }
-
-    normalized.requiredDecisions.push({
-      candidate_id: candidateId,
-      candidate_type: merged.candidate_type ?? 'unknown',
-      action: action ?? 'missing',
-      reason: 'Candidate was not accepted, ignored, or deferred.',
-    });
-
-    if (merged.candidate_type === 'utility_artifact') {
-      normalized.protectedUtilityKeys.add(normalizeNullableString(merged.artifact_key ?? merged.candidate_id));
-    } else if (merged.candidate_type === 'template_pattern') {
-      normalized.protectedTemplateKeys.add(normalizeNullableString(merged.pattern_key) ?? merged.candidate_id.replace(/^template-pattern:/, ''));
-    } else if (merged.candidate_type === 'observed_external_usage') {
-      normalized.protectedExternalUsageKeys.add(normalizeNullableString(merged.usage_key ?? merged.candidate_id));
-    }
-  }
-
-  for (const [candidateId, decision] of overrides.entries()) {
-    if (candidates.has(candidateId) || resolvedCandidateIds.has(candidateId)) {
-      continue;
-    }
-    const action = normalizeDecisionAction(decision.action);
-    if (action === 'ignore') {
-      const ignored = normalizeIgnoredCandidate(decision);
-      normalized.ignoredCandidates.push(ignored);
-      protectCandidate(ignored.candidateType, ignored);
-      continue;
-    }
-    if (action === 'accept') {
-      throw new ToolCatalogError(`Accepted decision ${candidateId} is missing its candidate payload.`, 2);
-    }
-    if (action === 'defer') {
-      const deferred = normalizeDeferredCandidate(decision);
-      normalized.deferredCandidates.push(deferred);
-      protectCandidate(deferred.candidateType, deferred);
-      continue;
-    }
-    normalized.requiredDecisions.push({
-      candidate_id: candidateId,
-      candidate_type: normalizeNullableString(decision.candidate_type) ?? 'unknown',
-      action: action ?? 'missing',
-      reason: 'Decision has no matching candidate payload.',
-    });
   }
 
   return normalized;
@@ -5142,7 +4964,7 @@ function collectDecisionRisks(decisions) {
     }
   }
   if (decisions.requiredDecisions.length > 0) {
-    risks.add('Index update was skipped because unresolved decisions remain; resolve or ignore every candidate before re-running apply.');
+    risks.add('Index update was skipped because unresolved decisions remain; resolve every Finding before re-running apply.');
   }
   if (risks.size === 0) {
     risks.add('Line numbers are stored as hints and should be verified against source when used.');
@@ -5176,8 +4998,8 @@ function buildApplySummary(context, decisions, beforeCounts, afterCounts, indexM
       accepted_template_patterns: decisions.acceptedTemplates.length,
       accepted_template_instances: decisions.acceptedTemplates.reduce((count, pattern) => count + pattern.instances.length, 0),
       accepted_observed_external_usages: decisions.acceptedExternalUsages.length,
-      ignored_candidates: decisions.ignoredCandidates.length,
-      deferred_candidates: decisions.deferredCandidates.length,
+      suppressions: decisions.ignoredCandidates.length,
+      deferrals: decisions.deferredCandidates.length,
       required_decisions: decisions.requiredDecisions,
       explicit_origin_priorities: decisions.explicitOriginPriorities.length,
     },
@@ -5228,8 +5050,8 @@ function renderDiscoveryApplyMarkdown(summary) {
     `- Template patterns: ${summary.decisions.accepted_template_patterns}`,
     `- Template instances: ${summary.decisions.accepted_template_instances}`,
     `- Observed external usages: ${summary.decisions.accepted_observed_external_usages}`,
-    `- Ignored candidates: ${summary.decisions.ignored_candidates}`,
-    `- Deferred candidates: ${summary.decisions.deferred_candidates}`,
+    `- Suppressions: ${summary.decisions.suppressions}`,
+    `- Deferrals: ${summary.decisions.deferrals}`,
     `- Origin priorities: ${summary.decisions.explicit_origin_priorities}`,
     '',
     '## Required Decisions',
@@ -5239,7 +5061,7 @@ function renderDiscoveryApplyMarkdown(summary) {
     lines.push('- None.');
   } else {
     for (const decision of required.slice(0, 20)) {
-      lines.push(`- \`${decision.candidate_id}\` (${decision.candidate_type}): ${decision.reason}`);
+      lines.push(`- \`${decision.finding_id}\` (${decision.finding_type}): ${decision.reason}`);
     }
     if (required.length > 20) {
       lines.push(`- ${required.length - 20} more required decisions omitted from Markdown summary.`);
