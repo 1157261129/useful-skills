@@ -141,6 +141,7 @@ Consequences:
 - CLI output is called a Finding, not a Candidate. Findings are untrusted evidence and must not include accept, ignore, defer, capability tags, summaries, selection descriptions, usage notes, limitations, or recommended actions.
 - CLI dry-run optimizes bounded recall and mechanical dedupe. Semantic dedupe, reusable-boundary decisions, business-specific risk judgment, and catalog prose belong to workers.
 - Discovery uses a durable run directory as the shared channel. Workers write structured artifacts and minimal `status.md` files; narrative reports are not required.
+- The dispatcher writes the run root `status.md`; workers write terminal status files under `workers/<work_item_id>/status.md` so concurrent worker handoff cannot overwrite dispatcher or peer state.
 - The main agent is the sole subagent dispatcher. Workers may produce Markdown work plans and child briefs, but workers must not spawn subagents.
 - Work plans use strict Markdown because agents handle Markdown better than JSON for orchestration; final Decision Files use JSON because CLI apply needs deterministic structured input.
 - Large dry-runs are handled by manifest/index files plus recursive map-reduce chunking. No LLM worker should consume an oversized full dry-run directly.

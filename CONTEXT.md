@@ -22,6 +22,14 @@ A final accepted reusable item stored in the project index, such as a utility ar
 
 A structural evidence record produced during discovery. A finding is not a recommendation, decision, or catalog entry.
 
+## Finding Evidence Pack
+
+A structurally validated collection of discovery evidence produced by Evidence Harvest. Its schema and anchors must be checkable, but its semantic content is not trusted as a catalog decision.
+
+## Artifact Sanity Gate
+
+A dispatcher-owned validation step that confirms a Finding Evidence Pack is structurally usable before worker review. It does not decide whether any Finding should become a Catalog Entry.
+
 ## Review Group
 
 A worker-organized collection of findings that appear to describe the same reusable boundary, repeated pattern, or observed external usage.

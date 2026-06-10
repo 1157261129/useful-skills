@@ -120,6 +120,8 @@ function checkSkillFrontmatter() {
 function checkToolCatalogSkillDocs() {
   const discover = readFileSync(path.join(skillsDir, 'tool-catalog-discover/SKILL.md'), 'utf8');
   const consult = readFileSync(path.join(skillsDir, 'tool-catalog-consult/SKILL.md'), 'utf8');
+  const evidencePackValidator = path.join(skillsDir, 'tool-catalog-discover/scripts/validate-evidence-pack.mjs');
+  assert(existsSync(evidencePackValidator), 'tool-catalog-discover Evidence Pack validator must exist');
 
   for (const skillName of toolCatalogSkills) {
     const text = readFileSync(path.join(skillsDir, skillName, 'SKILL.md'), 'utf8');
@@ -136,6 +138,13 @@ function checkToolCatalogSkillDocs() {
     'discover --apply <decisions.json>',
     'two-phase Tool Catalog CLI workflow',
     'durable run directory',
+    'Artifact Sanity Gate',
+    'Finding Evidence Pack',
+    'node scripts/validate-evidence-pack.mjs <finding-manifest.json> --json',
+    'manifest.run_files.run_id',
+    'finding-index.items[]',
+    "active surface's subagent dispatch tools",
+    'The main agent runs Evidence Harvest and the Artifact Sanity Gate. The worker DAG starts at the Shard Planner Worker.',
     'The main agent is the only dispatcher.',
     '`model` and `reasoning_effort`',
     'workers must not spawn subagents',
@@ -156,7 +165,6 @@ function checkToolCatalogSkillDocs() {
     'Discovery Decision File',
     'relative source anchors',
     'Narrative reports are not required.',
-    'Evidence Harvest Worker',
     'Shard Planner Worker',
     'Chunk Planner Worker',
     'Shard Review Worker',
@@ -187,6 +195,11 @@ function checkToolCatalogSkillDocs() {
     discover,
     'Every work plan must include these fields exactly once per work item: `work_item_id`, `role`, `depends_on`, `brief`, `inputs`, `outputs`, and `coverage`.',
     'tool-catalog-discover work plan contract',
+  );
+  assertIncludes(
+    discover,
+    'The dispatcher writes root `status.md`; every worker writes a concise terminal `workers/<work_item_id>/status.md`.',
+    'tool-catalog-discover status path contract',
   );
   assertIncludes(
     discover,
@@ -251,7 +264,6 @@ function checkToolCatalogSkillDocs() {
   assertOrderedIncludes(
     discover,
     [
-      'Evidence Harvest Worker:',
       'Shard Planner Worker:',
       'Chunk Planner Worker:',
       'Shard Review Worker:',
