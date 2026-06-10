@@ -284,9 +284,13 @@ const JAVA_EXTERNAL_UTILITY_PREFIXES = [
   'org.apache.commons.',
   'org.springframework.beans.BeanUtils',
   'org.springframework.util.',
-  'java.util.Collections',
-  'java.util.Objects',
-  'java.nio.file.Files',
+];
+const JAVA_BUILT_IN_PREFIXES = [
+  'java.',
+  'javax.',
+  'jdk.',
+  'sun.',
+  'com.sun.',
 ];
 const JS_EXTERNAL_UTILITY_PACKAGES = new Set([
   '@vueuse/core',
@@ -2023,7 +2027,7 @@ function extractJsUtilityCandidate(record, usageByTarget) {
     confidence: importedBy.length > 0 ? 'high' : 'medium',
     action: 'review',
     module_path: getModulePath(relativePath),
-    source_anchor: makeSourceAnchor(relativePath, members[0]?.source_anchor.line ?? 1, basename),
+    source_anchor: members[0]?.source_anchor ?? makeSourceAnchor(relativePath, 1, basename),
     evidence,
     members,
     imported_by: importedBy.slice(0, 10),
@@ -2137,6 +2141,9 @@ function extractJavaExternalUsages(records) {
 
   for (const record of records.filter((item) => item.language === 'java')) {
     for (const javaImport of extractJavaImports(record)) {
+      if (JAVA_BUILT_IN_PREFIXES.some((prefix) => javaImport.import_path.startsWith(prefix))) {
+        continue;
+      }
       if (!JAVA_EXTERNAL_UTILITY_PREFIXES.some((prefix) => javaImport.import_path.startsWith(prefix))) {
         continue;
       }
@@ -6546,17 +6553,33 @@ function verificationAnchors(entry) {
     }));
   }
   if (entry.kind === 'external_usage') {
-    return [{
-      label: 'external-usage',
-      anchor: entry.source_anchor,
-      hints: {
-        requireExactNeedle: true,
-        exactNeedles: [
-          entry.call_text,
-          entry.call_text ? entry.snippet : null,
-        ],
-      },
-    }];
+    const checks = [];
+    if (entry.import_text) {
+      checks.push({
+        label: 'external-usage:import',
+        anchor: entry.source_anchor,
+        hints: {
+          requireExactNeedle: true,
+          exactNeedles: [entry.import_text],
+        },
+      });
+    }
+    if (entry.call_text) {
+      checks.push({
+        label: 'external-usage:call',
+        anchor: entry.call_anchor ?? entry.source_anchor,
+        hints: {
+          requireExactNeedle: true,
+          exactNeedles: [
+            entry.call_text,
+            entry.snippet === entry.import_text ? null : entry.snippet,
+          ],
+        },
+      });
+    }
+    if (checks.length > 0) {
+      return checks;
+    }
   }
 
   return [];

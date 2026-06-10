@@ -146,6 +146,12 @@ function checkToolCatalogSkillDocs() {
     "active surface's subagent dispatch tools",
     'The main agent runs Evidence Harvest and the Artifact Sanity Gate. The worker DAG starts at the Shard Planner Worker.',
     'The main agent is the only dispatcher.',
+    'Default worker concurrency is at most 2.',
+    'Maintain a ready queue',
+    'fill open dispatch capacity immediately',
+    'review and merge workers may prefer economical models',
+    'finalizer, review, and repair profiles increase model strength or `reasoning_effort`',
+    'Do not statically assign every worker to a strong model.',
     '`model` and `reasoning_effort`',
     'workers must not spawn subagents',
     'strict Markdown work plans',
@@ -187,6 +193,9 @@ function checkToolCatalogSkillDocs() {
     'must not modify the Discovery Decision File',
     'blocking decision needed',
     'review-only mode',
+    'Shard Planner Worker must not over-split',
+    'prefer directory, module, and language shards',
+    'recurse to chunking only when bounded input limits require it',
   ]) {
     assertIncludes(discover, expected, 'tool-catalog-discover');
   }

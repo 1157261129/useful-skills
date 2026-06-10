@@ -23,6 +23,8 @@ Use this skill to prepare or refresh a Target Project's Project Index. Discovery
 - The main agent runs Evidence Harvest and the Artifact Sanity Gate. The worker DAG starts at the Shard Planner Worker.
 - Treat CLI dry-run output as a structurally validated Finding Evidence Pack, not trusted semantic recommendations.
 - The main agent is the only dispatcher. It owns the workflow DAG, ready queue, concurrency, worker supervision, durable run artifacts, and user I/O.
+- Default worker concurrency is at most 2. Maintain a ready queue; when a worker reaches terminal status or a slot opens, recompute readiness and fill open dispatch capacity immediately until the pool is full or no work is ready.
+- Dispatch profiles are role-specific: review and merge workers may prefer economical models; finalizer, review, and repair profiles increase model strength or `reasoning_effort` with ambiguity, risk, dependency depth, and verification burden. Do not statically assign every worker to a strong model.
 - Every worker receives the shared run contract: `run_id`, `stage`, `worker_id`, `work_item_id`, `role`, `depends_on`, `brief`, `inputs`, `outputs`, `coverage`, and upstream artifact paths.
 - Dispatch must attempt the selected `model` and `reasoning_effort` fields first even when the active subagent tool schema omits them. Treat those fields as unavailable only after an actual dispatch failure.
 - Workers may produce strict Markdown work plans and child briefs, but workers must not spawn subagents.
@@ -46,7 +48,7 @@ Use this skill to prepare or refresh a Target Project's Project Index. Discovery
 
 ## Worker Flow
 
-1. Shard Planner Worker: read the validated harvest manifest/index, produce bounded shard work items, assign `coverage`, and route any oversized shard to a Chunk Planner Worker instead of one oversized prompt.
+1. Shard Planner Worker: read the validated harvest manifest/index, produce bounded shard work items, assign `coverage`, and route any oversized shard to a Chunk Planner Worker instead of one oversized prompt. Shard Planner Worker must not over-split: prefer directory, module, and language shards; recurse to chunking only when bounded input limits require it.
 2. Chunk Planner Worker: recursively split one oversized shard into bounded child work items and write Markdown plans only; it must not spawn subagents.
 3. Shard Review Worker: clean mechanical noise, group Findings structurally, validate local anchors, and flag structural issues for one bounded shard or chunk.
 4. Shard Review Worker outputs stay structural only: no accept/ignore/defer, semantic tags, summaries, usage notes, limitations, or final catalog decisions.

@@ -113,6 +113,22 @@ public class ${name}Controller {
 `);
   }
 
+  writeProjectFile(rootPath, 'src/main/java/com/acme/web/JdkUtilityImports.java', `
+package com.acme.web;
+
+import java.nio.file.Path;
+import java.util.Collections;
+import java.util.Objects;
+import static java.nio.file.Files.exists;
+
+public class JdkUtilityImports {
+  public boolean hasExistingPath(Path path) {
+    Objects.requireNonNull(Collections.emptyList());
+    return exists(path);
+  }
+}
+`);
+
   writeProjectFile(rootPath, 'src/utils/request.ts', `
 export function request(url: string) {
   return fetch(url).then((response) => response.json());
@@ -147,6 +163,16 @@ import { ref } from 'vue'
 import { useDebounceFn } from '@vueuse/core'
 
 const rows = ref([])
+const spacer01 = 1
+const spacer02 = 2
+const spacer03 = 3
+const spacer04 = 4
+const spacer05 = 5
+const spacer06 = 6
+const spacer07 = 7
+const spacer08 = 8
+const spacer09 = 9
+const spacer10 = 10
 const refresh = useDebounceFn(() => {
   rows.value = []
 }, 150)
@@ -675,6 +701,15 @@ try {
   } = selectFixtureFindings(fullDryRunArtifacts.findings);
 
   assert(ignoredUtility, 'Ignored fixture candidate must exist');
+  assert.equal(ignoredUtility.name, 'legacy');
+  assert.equal(ignoredUtility.qualified_name, 'src/utils/legacy.ts');
+  assert.equal(ignoredUtility.source_anchor.symbol, 'legacyFormat', 'TypeScript artifact source anchor must use the first exported symbol, not the file basename');
+  assert(!ignoredUtility.source_anchor.text.endsWith('#legacy'), 'TypeScript artifact source anchor must not use the basename slug when the export name differs');
+  const observedExternalOrigins = fullDryRunArtifacts.findings.findings.observed_external_usages.map((finding) => finding.origin_key);
+  assert(!observedExternalOrigins.includes('java.util.Collections'), 'JDK java.util.Collections import must not be observed as external utility usage');
+  assert(!observedExternalOrigins.includes('java.util.Objects'), 'JDK java.util.Objects import must not be observed as external utility usage');
+  assert(!observedExternalOrigins.includes('java.nio.file.Files.exists'), 'JDK static import must not be observed as external utility usage');
+  assert(observedExternalOrigins.every((origin) => !origin.startsWith('java.')), 'JDK java.* imports must stay out of observed external usages');
   assert(!fullDryRunArtifacts.findings.findings.template_patterns.some((finding) => finding.pattern_key === 'vue3-element-plus-table-page'), 'Single Vue table page must stay below template threshold');
 
   const changedBelowThreshold = runCliJson([
@@ -1251,6 +1286,8 @@ try {
   const verifyExternal = runCliJson(['verify', `external:${fixtureEntryKey(externalUsage)}`, '--root', projectRoot], { catalogHome });
   assert.equal(verifyExternal.ok, true);
   assert.equal(verifyExternal.status, 'verified');
+  assert(verifyExternal.checks.some((check) => check.label === 'external-usage:import' && check.status === 'verified'), 'External usage verify must validate the stored import anchor text');
+  assert(verifyExternal.checks.some((check) => check.label === 'external-usage:call' && check.status === 'relocated'), 'External usage verify must validate call text even when it is outside the import anchor window');
 
   const dbMtimeAfterConsulting = statSync(replaySummary.project.catalog_path).mtimeMs;
   assert.equal(dbMtimeAfterConsulting, dbMtimeBeforeConsulting, 'query/show/verify must be read-only');
@@ -1270,7 +1307,8 @@ try {
   });
   assert.equal(staleExternal.ok, false);
   assert.equal(staleExternal.status, 'stale-or-missing');
-  assert(staleExternal.checks.some((check) => check.status === 'stale-symbol'), 'Removed external call must be stale even when import remains');
+  assert(staleExternal.checks.some((check) => check.label === 'external-usage:import' && check.ok), 'External usage import anchor must remain verified when only the call is removed');
+  assert(staleExternal.checks.some((check) => check.label === 'external-usage:call' && check.status === 'stale-symbol'), 'Removed external call must be stale even when import remains');
 
   const javaPath = path.join(projectRoot, 'src/main/java/com/acme/common/StringUtils.java');
   const javaText = readFileSync(javaPath, 'utf8');
