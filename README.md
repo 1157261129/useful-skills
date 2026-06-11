@@ -37,16 +37,16 @@ The documented Tool Catalog command surface is:
 tool-catalog doctor
 tool-catalog config project-id <id> [--root <path>] [--json]
 tool-catalog config info [--root <path>] [--json]
-tool-catalog discover --full --dry-run [--root <path>] [--language <name>] [--include <glob>] [--exclude <glob>] [--json]
-tool-catalog discover --changed <paths...> --dry-run [--root <path>] [--language <name>] [--include <glob>] [--exclude <glob>] [--json]
 tool-catalog discover --apply <decisions.json> [--root <path>] [--json]
 tool-catalog tags [--root <path>] [--json]
-tool-catalog query --tag <tag> --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
-tool-catalog query --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
+tool-catalog query --tag <tag> [--description <text>] [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
+tool-catalog query --description <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
 tool-catalog show <selector> [--root <path>] [--json]
 tool-catalog verify <selector> [--root <path>] [--json]
 ```
 
-Discovery dry-run is an Evidence Harvest workflow: agents should follow the bundled `tool-catalog-discover` skill, then use `finding-manifest.json`, `finding-index.json`, and `findings.json` to dispatch the worker DAG before writing a reviewed Discovery Decision File for `discover --apply`.
+Discovery is agent-owned: agents should follow the bundled `tool-catalog-discover` skill, scan the Target Project through worker subagents, write a reviewed Discovery Decision File, then use `discover --apply` as the only CLI write path.
 
-Consulting should inspect the Capability Tag Vocabulary with `tool-catalog tags`, query with exact `--tag` filters, then use `show` and `verify` before reuse. Repeated `--tag` filters use exact AND semantics.
+Consulting should inspect the Capability Tag Vocabulary with `tool-catalog tags`, query with exact `--tag` filters or `--description` text, then use `show` for returned entries and `verify` for project-owned source anchors before reuse. External utility class or module selectors are returned for agent judgment; dependency and convention checks are not a CLI verify responsibility. Suppressions are discovery-only state and are not returned by consulting commands. Repeated `--tag` filters use exact AND semantics.
+Query result limits default to 5 and may be raised to at most 10. Description text is deterministic query text, not a semantic recommendation request. `--current-file` is query context only. `--artifact-type` narrows project-owned `artifact:` results; external selectors do not store artifact types.
+Query output is a minimal ranked list and does not include source anchors, usage notes, or limitations. Use `show` for full entry details. `verify` accepts only project-owned `artifact:` selectors; external selectors must be checked by the agent against dependencies and local conventions.

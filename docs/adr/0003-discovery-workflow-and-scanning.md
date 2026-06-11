@@ -9,48 +9,55 @@ The first version of the tool catalog supports Java Spring Boot Maven projects, 
 Consequences:
 
 - Discovery uses language-specific detectors instead of one generic parser.
-- Index records need language and framework metadata so consulting can filter results by the current coding context.
+- Index records need stable context metadata so consulting can filter results by the current coding context. Discovery must write `language` for accepted project-owned artifacts and external selectors, write `artifact_type` only for project-owned artifacts, write optional `framework` only when the framework is known, and write optional `module_path` only for project-owned artifacts.
 - Backend and frontend records share one target project index instead of separate databases.
-- Vue discovery targets Vue 3 common structures, utility modules, composables, and recurring template patterns; Vue 2 mixins and page-level component analysis are outside the first version.
+- Vue discovery targets Vue 3 utility modules and composables; Vue 2 mixins, page-level component analysis, and recurring template patterns are outside the Tool Catalog scope.
 
-## ADR 0006: Discovery Suggests Extraction but Does Not Edit Code
+## ADR 0006: Discovery Does Not Suggest Template Extraction
 
-When recurring template code appears extractable into a utility artifact, the discovery skill reports the opportunity only if the pattern is frequent, non-business-specific, has no equivalent existing utility, and can be extracted behind a stable method signature. Code changes require user approval and should be handled by a separate implementation subagent. After a successful extraction, the main agent triggers incremental rediscovery for the changed files or modules.
+Discovery does not look for recurring template code or suggest extracting it. Code-changing extraction work is outside the Tool Catalog discovery workflow.
 
 Consequences:
 
 - Discovery does not modify target project code.
-- Extraction recommendations must include the repeated pattern, affected references, missing equivalent utility, and the proposed utility shape.
-- Failed extraction attempts do not update the index.
+- Discovery effort stays focused on reusable utility artifacts, external utility selectors, and external origin priority data.
 
 ## ADR 0014: Batch Discovery Decisions After Scanning
 
-The discovery skill scans first, then routes Findings through the worker DAG before presenting compact blocking decisions. User decisions are focused on unresolved utility origin priorities, unresolved Review Group conflicts, business-specific template risk, and extraction opportunities.
+The discovery skill scans first, then routes Findings through the worker DAG before presenting compact blocking decisions. User decisions are focused on unresolved Artifact Priority questions and unresolved Review Group conflicts.
 
 Consequences:
 
-- High-confidence accepted entries, suppressions, and deferrals do not require user confirmation after Decision Review passes.
-- SQLite is updated after required user decisions are resolved.
-- Catalog Finalizer workers classify Review Groups as accepted entries, suppressions, deferrals, or blocking questions. The main agent does not choose final semantic actions from raw dry-run output.
+- High-confidence accepted entries and class, module, or origin-level suppressions do not require user confirmation after Decision Review passes.
+- SQLite is updated by discovery apply after required user decisions are resolved.
+- Catalog Finalizer workers classify Review Groups as accepted entries, suppressions, run-local deferrals, or blocking questions. Run-local deferrals stay in discovery artifacts and are not apply input. The main agent does not choose final semantic actions from raw source evidence.
 - Discovery workers finish bounded review and merge before asking the user, then batch the highest-impact blocking decisions instead of interrupting on each Finding.
 
-## ADR 0015: Scope Discovery Cleanup to Refresh Mode
+## ADR 0015: Scope Discovery Apply by Decision File Mode
 
-Discovery cleanup is scoped by refresh mode. A full discovery may remove or downgrade entries that no longer exist or no longer qualify in the supported project scope, while a changed-path discovery only refreshes and cleans entries tied to the provided paths.
+Discovery cleanup is scoped by the Discovery Decision File `project.mode`. In `full` mode, the Decision File represents the supported catalog state for the target project, so apply replaces existing catalog entries, external selectors, origins, suppressions, and fingerprints with the file contents. In `changed` mode, apply upserts records present in the Decision File and deletes only records explicitly named under typed `removed` groups, leaving all unrelated existing records untouched.
 
 Consequences:
 
 - Incremental rediscovery after subagent work cannot accidentally prune unrelated catalog entries.
 - Users can run full discovery when they want the current working tree to become the source of truth for the catalog.
+- The CLI does not infer full or changed scope from scanned paths, because scanning belongs to the discovery agent.
+- `project.mode` is required and must be either `full` or `changed`.
+- `removed` is a typed object with `artifacts`, `external_selectors`, `origins`, `suppressions`, and `fingerprints` arrays. It contains database identities only: catalog selectors, origin keys, suppression keys, or fingerprint keys. It must not contain file paths, finding IDs, import text, call text, source anchors, or other raw evidence identifiers.
+- Apply handles removals by type, not by guessing from mixed string prefixes. Entry removals are applied before orphan origin, suppression, and fingerprint cleanup.
 
-## ADR 0016: Index Only Observed External Utility Usage
+## ADR 0016: Derive External Utility Entries From Observed Usage
 
-External utility origins are indexed only when the target project already imports or calls them. The catalog does not crawl or document full external library APIs, because its purpose is to capture project reuse practice rather than replace general dependency documentation.
+External utility origins and selectors are indexed only when the target project already imports or calls them. The observed import and call evidence stays in discovery run artifacts and is not persisted as queryable Project Index data. The catalog does not crawl or document full external library APIs, because its purpose is to capture project reuse practice rather than replace general dependency documentation.
 
 Consequences:
 
 - Project-owned utility artifacts can be indexed from source with richer metadata.
-- External utility entries are based on observed imports, calls, examples, and file anchors.
+- External utility entries are class-level or module-level entries based on observed imports and stable external identifiers.
+- Observed external usage is run-artifact evidence only; external Artifact Priority belongs to the utility origin/module derived from that evidence.
+- External imports and calls produce class or module selectors and are also normalized to library/module origins before priority assignment. Usage counts are aggregated by normalized origin as distinct target project source-file counts, then persisted on the origin; multiple imports or calls for the same origin in one file count once, and individual usage rows are not persisted.
+- Discovery assigns external origin priority from `usage_count` in descending order, so origins used in more source files receive lower numeric priority values. Equal `usage_count` values are ordered by `origin_key` lexicographically. External origin priority is not a user-decision branch.
+- Consulting output for external utilities uses the external class or module fully qualified name and does not include import, call, or source-anchor evidence by default. Java symbols use class FQCNs; JavaScript and TypeScript symbols use stable module identifiers such as `lodash/isEqual` or `@vueuse/core`. Function-level exports are not catalog selectors.
 
 ## ADR 0017: Use Conservative Utility Discovery
 
@@ -63,14 +70,14 @@ Consequences:
 - Explicit utility naming and shared utility package paths are default inclusion signals.
 - Business-package helper methods are not indexed by default unless the discovery agent accepts them as non-business reusable utilities.
 
-## ADR 0020: Use Controlled Template Pattern Discovery
+## ADR 0020: Remove Template Pattern Discovery
 
-The first version does not perform general-purpose clone detection. Template discovery uses language-specific structural fingerprints and controlled pattern detectors, then relies on the worker review and Catalog Finalizer flow to decide whether frequent Findings represent useful Template Code.
+The discovery workflow does not perform general-purpose clone detection or template-pattern discovery. Repeated implementation examples are not catalog entries.
 
 Consequences:
 
-- Discovery favors reusable implementation patterns over raw textual similarity.
-- Common business-flow similarity is not enough to create a template entry.
+- Discovery stays accurate and economical by focusing on utility artifacts, external utility selectors, and origin-level usage counts.
+- Common business-flow similarity never creates a catalog entry.
 
 ## ADR 0029: Exclude Dependencies, Build Output, and Generated Files
 
@@ -83,35 +90,35 @@ Consequences:
 
 ## ADR 0030: Discovery Does Not Run Builds or Tests by Default
 
-Discovery scans files, extracts structural Findings, counts references, verifies symbol presence, and updates SQLite. It does not run project builds or test suites by default.
+Discovery scans files, extracts structural Findings, counts references, and verifies symbol presence before writing a reviewed Decision File. SQLite is updated only during discovery apply. Discovery does not run project builds or test suites by default.
 
 Consequences:
 
 - Catalog refresh remains lightweight.
 - Code-changing workflows, such as utility extraction, are responsible for their own verification.
 
-## ADR 0032: Discover Supports Full, Changed, Dry-Run, and Scope Filters
+## ADR 0032: Discovery Scope Belongs to the Agent Workflow
 
-The discover command supports full refresh, changed-path refresh, dry-run reporting, language filters, and include or exclude scope overrides. These modes keep full cleanup, incremental rediscovery, and review-only scans explicit.
+The discovery skill supports full refresh, changed-path refresh, language filters, and include or exclude scope overrides as agent workflow inputs. The CLI does not expose dry-run scanning modes; `discover --apply` is the only discovery write command.
 
 Consequences:
 
-- Agents can inspect Findings and worker review artifacts before writing index changes.
-- Incremental refresh after implementation can target only changed paths.
+- Agents can inspect worker review artifacts before writing index changes.
+- Incremental refresh after implementation can target only changed paths through the discovery workflow.
 
 ## ADR 0033: Use Two-Phase Discovery Apply
 
-Discovery is a two-phase workflow. The CLI first runs Evidence Harvest in dry-run mode, producing machine-readable Findings plus manifest and index artifacts. The worker DAG reviews those facts, groups them into Review Groups, performs local gap audit for accepted entries, and writes a structured Discovery Decision File. Discovery apply consumes the decision file, not raw dry-run output, when updating the project index.
+Discovery is a two-phase workflow. Agent workers first harvest evidence from the Target Project and review it into accepted entries, suppressions, run-local deferrals, and blocking questions. Discovery apply consumes the reviewed Discovery Decision File when updating the Project Index.
 
 Consequences:
 
 - Unreviewed Findings are not written to the project index.
 - The CLI remains deterministic while the skill handles semantic judgment.
-- Discovery agents default to reading the manifest and index before bounded worker review inputs.
-- Worker review artifacts avoid semantic recommendations until the Catalog Finalizer stage.
-- Review artifacts include compact structural facts: utility class names, source anchors, paths or packages, method signatures, short snippets, template pattern keys, representative instances, and instance anchors.
-- Dry-run writes Finding artifacts only; legacy compatibility artifacts are not part of the current CLI contract.
-- Discovery Decision Files store accepted entries in their final catalog shape, while suppressions and deferrals preserve enough Finding traceability for future preclassification.
+- Discovery agents default to producing bounded worker review inputs before semantic finalization.
+- Worker review artifacts avoid final semantic recommendations until the Catalog Finalizer stage. Economical shard review may include non-binding tag hints to reduce finalizer search cost.
+- Review artifacts include compact structural facts: utility class or module names, source anchors, paths or packages, short snippets, observed imports, observed calls, and call anchors.
+- Raw source evidence artifacts are agent workflow artifacts, not CLI output.
+- Discovery Decision Files store only database-ready accepted entries, project-owned source anchors, class, module, or origin-level suppressions, normalized origins, origin usage counts, Artifact Priority values, capability tags, descriptions, entry context metadata, fingerprints for entries and suppressions, and explicit removal identities. The top-level JSON keys are `project`, `artifacts`, `external_selectors`, `origins`, `suppressions`, `fingerprints`, and `removed`; `project.mode` is either `full` or `changed`. Accepted artifacts and external selectors must include the minimum required fields defined by the CLI contract before apply. Worker rationale, long reports, entry disputes, run-local deferrals, raw import or call evidence, external usage anchors, current-file query context, and diagnostic notes stay in run artifacts and are not apply input.
 
 ## ADR 0036: Report Discovery Results as an Actionable Summary
 
@@ -122,34 +129,36 @@ Consequences:
 - Users can quickly see what changed and what still needs a decision.
 - Detailed entries remain available through query and show commands.
 
-## ADR 0039: Use Lightweight Structural Scanning First
+## ADR 0039: Use Agent-Owned Structural Scanning First
 
-The first version does not depend on Java, TypeScript, or Vue parser libraries. Discovery uses file paths, package names, imports, annotations, exports, method signatures, call-site patterns, and structural fingerprints to identify high-confidence Findings.
+Discovery agents use economical source inspection first: file paths, package names, imports, annotations, exports, method signatures as evidence, call-site patterns, and structural fingerprints. The CLI does not scan Target Project source; it validates and persists structured discovery output.
 
 Consequences:
 
 - Installation stays simple and dependency-light.
-- Ambiguous structures are reported for review instead of being force-indexed.
+- Ambiguous structures are routed through discovery workers instead of being force-indexed.
 
-## ADR 0041: Use Agent-Orchestrated Evidence Harvest for Discovery
+## ADR 0041: Use Agent-Owned Evidence Harvest for Discovery
 
-Tool Catalog discovery treats the CLI dry-run as a bounded-recall evidence harvest, not as a trusted semantic generator. The CLI emits mechanical Findings, structural metadata, simple deterministic dedupe, and fingerprints; worker subagents perform review grouping, cross-shard merge, local gap audit, semantic finalization, decision review, repair, and apply verification. The main agent is the only dispatcher: it owns the workflow DAG, ready queue, concurrency, worker supervision, durable run artifacts, and user I/O, but it does not perform concrete discovery or final catalog decisions itself.
+Tool Catalog discovery treats source scanning as agent work, not CLI work. The discovery dispatcher coordinates economical worker subagents that inspect the Target Project and identify reusable project utilities, external utility class or module selectors, normalized external origins, distinct source-file usage counts, and non-binding tag hints. Stronger finalizer workers assign final capability tags, descriptions, Artifact Priority values, deduplicate entries, and write a structured Discovery Decision File. The CLI validates and persists that file into the Project Index.
 
 Consequences:
 
 - The old candidate-centric discovery model is superseded for new implementation work; backward compatibility with the current unusable implementation is not required.
-- CLI output is called a Finding, not a Candidate. Findings are untrusted evidence and must not include accept, ignore, defer, capability tags, summaries, selection descriptions, usage notes, limitations, or recommended actions.
-- CLI dry-run optimizes bounded recall and mechanical dedupe. Semantic dedupe, reusable-boundary decisions, business-specific risk judgment, and catalog prose belong to workers.
+- CLI discovery input is a structured decision artifact, not raw scanned source and not unreviewed Findings.
+- Source scanning, reusable-boundary decisions, semantic dedupe, catalog prose, and priority assignment belong to workers, with stronger finalizer workers owning final semantic decisions.
 - Discovery uses a durable run directory as the shared channel. Workers write structured artifacts and minimal `status.md` files; narrative reports are not required.
 - The dispatcher writes the run root `status.md`; workers write terminal status files under `workers/<work_item_id>/status.md` so concurrent worker handoff cannot overwrite dispatcher or peer state.
 - The main agent is the sole subagent dispatcher. Workers may produce Markdown work plans and child briefs, but workers must not spawn subagents.
-- Work plans use strict Markdown because agents handle Markdown better than JSON for orchestration; final Decision Files use JSON because CLI apply needs deterministic structured input.
-- Large dry-runs are handled by manifest/index files plus recursive map-reduce chunking. No LLM worker should consume an oversized full dry-run directly.
-- Shard Review Workers use economical models and only clean, mechanically dedupe, group, and flag structural issues. They do not output final actions or semantic catalog fields.
+- Work plans use strict Markdown because agents handle Markdown better than JSON for orchestration; final Decision Files use JSON because CLI apply needs deterministic structured input. Decision Files must not include worker reasoning or narrative reports.
+- Decision Files are final database-object records, not old Finding Evidence Packs. They must not contain legacy evidence groups, callable-level records, repeated-code records, raw external usage rows, or deferrals.
+- Large projects are handled by manifest/index files plus recursive map-reduce chunking. No LLM worker should consume an oversized full-project source listing directly.
+- Shard Review Workers use economical models and scan bounded source shards for reusable project utilities and observed external utility usage. They output structured review data only: project utility artifacts or modules, project-owned source anchors, external utility class or module selectors, normalized external origins, distinct source-file usage counts, and non-binding tag hints.
 - Cross-Shard Merge Workers merge review groups and preserve conflicts without final semantic decisions.
-- Catalog Finalizer Workers use stronger reasoning, inspect source anchors, perform mandatory local gap audit, create semantic catalog entries, suppressions, deferrals, and write the entry-centric JSON Decision File.
-- Decision Review Workers are mandatory before apply. They review the Decision File and structured artifacts; fixable findings go to repair workers, blocking findings go through user decision and incorporation workers.
-- Review passing with no blockers triggers Apply/Verify Worker by default unless the user requested review-only mode.
-- The final Decision File is entry-centric: final identity is based on entry keys and source anchors, not CLI finding provenance.
-- Project Index state should persist catalog entries, suppressions, deferrals, and structural fingerprints. Later discovery runs use these records for pre-classification so unchanged entries, unchanged suppressions, and unchanged deferrals do not repeatedly consume worker context.
-- Dispatch profiles are role-specific. Review and merge workers default to economical models, finalizer workers use stronger reasoning, and default concurrency is capped. If a subagent tool schema omits model or reasoning fields, dispatch still attempts to pass them first; only an actual dispatch failure proves selection is unavailable on that surface.
+- Catalog Finalizer Workers use stronger reasoning, inspect source anchors, perform mandatory local gap audit, create final semantic catalog entries, class, module, or origin-level suppressions, run-local deferrals, capability tags, descriptions, Artifact Priority values, and write the entry-centric JSON Decision File without deferrals.
+- Decision Review Workers are mandatory before apply. They review the Decision File and structured artifacts for missed-scan risk, origin normalization, project-owned priority dominance, external usage-count priority, and whether consulting can return project-owned-first results with a default limit of five and a maximum limit of ten; fixable findings go to repair workers, blocking findings go through user decision and incorporation workers.
+- Review passing with no blockers triggers Apply/Verify Worker by default unless the user requested review-only mode; this verifies persisted database records and project-owned source anchors, not external selector availability.
+- The final Decision File is entry-centric and database-ready: project-owned final identity is based on catalog selectors and source anchors, while external final identity is based on external selectors and normalized origins, not CLI finding provenance, worker reasoning, or old evidence group names.
+- Project Index state should persist catalog entries, class, module, or origin-level suppressions, and discovery-written structural fingerprints for entries and suppressions. Later discovery agents may compare these records to avoid repeatedly reviewing obviously unchanged entries and suppressions. Suppressions and fingerprints must target only `artifact`, `external_selector`, or `origin`; they must not target methods, callable exports, repeated-code examples, raw external usage rows, findings, import statements, call sites, source anchors, or raw evidence rows.
+- Fingerprints are discovery-only comparison aids and are stored as opaque strings. The CLI does not compute fingerprint values, inspect their source inputs, scan source, pre-classify findings, or expose fingerprints to consulting commands for query filtering, ranking, show, or verify behavior.
+- Dispatch profiles are role-specific. Shard review and merge workers default to economical models, while finalizer, decision review, and repair workers use stronger reasoning as needed; default concurrency is capped. If a subagent tool schema omits model or reasoning fields, dispatch still attempts to pass them first; only an actual dispatch failure proves selection is unavailable on that surface.

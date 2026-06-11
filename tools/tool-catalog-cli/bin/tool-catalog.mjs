@@ -12,6 +12,11 @@ const CONFIG_FILE_NAME = 'config.json';
 const DEFAULT_CATALOG_DIR = '.tool-catalog';
 const SQLITE_MAX_BUFFER = 10 * 1024 * 1024;
 const PROJECT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SCHEMA_VERSION = 6;
+const DEFAULT_QUERY_LIMIT = 5;
+const MAX_QUERY_LIMIT = 10;
+const MAX_PROSE_CHARS = 1000;
+const TAG_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 const HELP_TEXT = `Tool Catalog CLI
 
@@ -20,80 +25,56 @@ Usage:
   tool-catalog doctor
   tool-catalog config project-id <id> [--root <path>] [--json]
   tool-catalog config info [--root <path>] [--json]
-  tool-catalog discover --full --dry-run [--root <path>] [--language <name>] [--include <glob>] [--exclude <glob>] [--json]
-  tool-catalog discover --changed <paths...> --dry-run [--root <path>] [--language <name>] [--include <glob>] [--exclude <glob>] [--json]
   tool-catalog discover --apply <decisions.json> [--root <path>] [--json]
   tool-catalog tags [--root <path>] [--json]
-  tool-catalog query --tag <tag> --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
-  tool-catalog query --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
+  tool-catalog query --tag <tag> [--description <text>] [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
+  tool-catalog query --description <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
   tool-catalog show <selector> [--root <path>] [--json]
   tool-catalog verify <selector> [--root <path>] [--json]
 
 Commands:
-  help              Print this help text.
-  doctor            Check runtime dependencies required by the Tool Catalog CLI.
-  config            Manage user-level Tool Catalog configuration.
-  discover          Harvest discovery Findings and evidence artifacts or apply reviewed decisions.
-  tags              List canonical capability tags available in the project index.
-  query             Search the existing project index for reusable entries.
-  show              Show compact details for one indexed entry.
-  verify            Verify indexed source anchors against the current working tree.
+  doctor            Check runtime dependencies.
+  config            Manage project identity mappings.
+  discover          Apply a reviewed Discovery Decision File.
+  tags              List derived Capability Tags from accepted entries.
+  query             Search the existing Project Index.
+  show              Show full details for one accepted entry.
+  verify            Verify project-owned artifact source anchors.
 
 Environment:
   TOOL_CATALOG_HOME Override the default ~/.tool-catalog data root.
 
-Consulting commands are read-only and never update discovery indexes.`;
+Query limits default to 5 and may be raised to at most 10.
+Selectors use artifact:<fully-qualified-class-or-relative-module> or external:<fully-qualified-class-or-module>.
+The CLI performs deterministic Project Index database operations only. Source scanning belongs to the tool-catalog-discover agent.`;
 
 const CONFIG_HELP_TEXT = `Tool Catalog config
 
 Usage:
   tool-catalog config project-id <id> [--root <path>] [--json]
-  tool-catalog config info [--root <path>] [--json]
-
-Commands:
-  project-id <id>   Store an explicit project identity mapping for a target root.
-  info              Resolve and initialize the current project index foundation.
-
-Options:
-  --root <path>     Resolve the target project from this root instead of Git/cwd.
-  --json            Print machine-readable JSON output.`;
+  tool-catalog config info [--root <path>] [--json]`;
 
 const DISCOVER_HELP_TEXT = `Tool Catalog discover
 
 Usage:
-  tool-catalog discover --full --dry-run [--root <path>] [--language <name>] [--include <glob>] [--exclude <glob>] [--json]
-  tool-catalog discover --changed <paths...> --dry-run [--root <path>] [--language <name>] [--include <glob>] [--exclude <glob>] [--json]
   tool-catalog discover --apply <decisions.json> [--root <path>] [--json]
 
-Modes:
-  --full            Scan the resolved target project root.
-  --changed <paths> Scan only the provided files or directories.
-  --dry-run         Emit Finding evidence artifacts without mutating the project index.
-  --apply <file>    Apply reviewed accept, ignore, and defer decisions to the project index.
-
-Filters:
-  --language <name> Limit scan to java, typescript, javascript, or vue. May be repeated or comma-separated.
-  --include <glob>  Include only matching relative paths; may be repeated.
-  --exclude <glob>  Exclude matching relative paths after include filtering; may be repeated.
-
-Output:
-  Default output is compact Markdown for agent review.
-  --json prints dry-run Finding summaries and evidence artifact paths or apply summary data as structured JSON.`;
+Discovery scanning is agent-owned. The CLI only validates and persists reviewed Discovery Decision Files.`;
 
 const QUERY_HELP_TEXT = `Tool Catalog query
 
 Usage:
-  tool-catalog query --tag <tag> --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
-  tool-catalog query --goal <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
+  tool-catalog query --tag <tag> [--description <text>] [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
+  tool-catalog query --description <text> [--root <path>] [--current-file <path>] [--language <name>] [--framework <name>] [--artifact-type <type>] [--limit <n>] [--json]
 
 Options:
-  --goal <text>          Describe the coding goal to search for.
   --tag <tag>            Exact canonical Capability Tag filter. May be repeated or comma-separated; repeated tags use AND semantics.
-  --current-file <path>  Relative or in-root file path used for weak module proximity ranking.
+  --description <text>   Deterministic text query matched against persisted English catalog prose.
+  --current-file <path>  Relative or in-root path used as query context only.
   --language <name>      Limit results to a language. May be repeated or comma-separated.
-  --framework <name>     Limit results to a framework. May be repeated or comma-separated.
-  --artifact-type <type> Limit results to an artifact/result type. May be repeated or comma-separated.
-  --limit <n>            Maximum results to return. Defaults to 10, maximum 50.
+  --framework <name>     Limit results to entries with known framework metadata. May be repeated or comma-separated.
+  --artifact-type <type> Limit project-owned artifact results to a type. May be repeated or comma-separated.
+  --limit <n>            Maximum results to return. Defaults to 5, maximum 10.
   --json                 Print machine-readable JSON output.`;
 
 const TAGS_HELP_TEXT = `Tool Catalog tags
@@ -101,7 +82,7 @@ const TAGS_HELP_TEXT = `Tool Catalog tags
 Usage:
   tool-catalog tags [--root <path>] [--json]
 
-The tags command is read-only. It lists canonical Capability Tags, concise descriptions, optional aliases, and indexed entry counts for the resolved project.`;
+The tags command is read-only. It derives canonical Capability Tags from accepted catalog entries.`;
 
 const SHOW_HELP_TEXT = `Tool Catalog show
 
@@ -109,203 +90,15 @@ Usage:
   tool-catalog show <selector> [--root <path>] [--json]
 
 Selectors:
-  artifact:<artifact_key>
-  member:<member_key>
-  template:<pattern_key>
-  external:<usage_key>
-
-Raw artifact, member, pattern, and usage identifiers are also accepted when unambiguous.`;
+  artifact:<fully-qualified-class-or-relative-module>
+  external:<fully-qualified-class-or-module>`;
 
 const VERIFY_HELP_TEXT = `Tool Catalog verify
 
 Usage:
-  tool-catalog verify <selector> [--root <path>] [--json]
+  tool-catalog verify <artifact-selector> [--root <path>] [--json]
 
-Verification checks indexed relative source anchors against the current working tree using line hints, symbol identity, and stored snippets where available.`;
-
-const MAX_SCAN_FILE_BYTES = 1024 * 1024;
-const TEMPLATE_MIN_INSTANCES = 3;
-const DEFAULT_QUERY_LIMIT = 10;
-const MAX_QUERY_LIMIT = 50;
-const VERIFY_LINE_WINDOW = 8;
-const SUPPORTED_EXTENSIONS = new Map([
-  ['.java', 'java'],
-  ['.ts', 'typescript'],
-  ['.tsx', 'typescript'],
-  ['.js', 'javascript'],
-  ['.jsx', 'javascript'],
-  ['.mjs', 'javascript'],
-  ['.cjs', 'javascript'],
-  ['.vue', 'vue'],
-]);
-const SUPPORTED_LANGUAGES = new Set(['java', 'typescript', 'javascript', 'vue']);
-const DECISION_ACTIONS = new Set(['accept', 'ignore', 'defer', 'review']);
-const CANDIDATE_GROUPS = [
-  'utility_artifacts',
-  'observed_external_usages',
-  'template_patterns',
-];
-const LEGACY_DECISION_FIELDS = [
-  'candidates',
-  'decisions',
-  'accepted_entries',
-  'accepted_utility_artifacts',
-  'accepted_observed_external_usages',
-  'accepted_template_patterns',
-  'ignored_candidates',
-  'deferred_candidates',
-];
-const CATALOG_COUNT_KEYS = [
-  'utility_origins',
-  'origin_priorities',
-  'artifacts',
-  'artifact_members',
-  'member_signatures',
-  'capability_tags',
-  'entry_capability_tags',
-  'template_patterns',
-  'template_instances',
-  'observed_external_usages',
-  'ignored_candidates',
-  'deferred_candidates',
-  'fts_entries',
-];
-const MAX_SUMMARY_CHARS = 280;
-const MAX_SNIPPET_CHARS = 500;
-const CAPABILITY_TAG_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-const MIN_CONSULT_SCHEMA_VERSION = 4;
-const MIN_PRECLASS_SCHEMA_VERSION = 5;
-const CAPABILITY_TAG_VOCABULARY = new Map([
-  ['api-client', {
-    description: 'Reusable API client request helpers and request-flow templates.',
-    aliases: ['api', 'client-request'],
-  }],
-  ['http', {
-    description: 'HTTP request helpers and transport-facing utility code.',
-    aliases: ['network', 'rest'],
-  }],
-  ['request', {
-    description: 'Request construction, dispatch, and reusable request patterns.',
-    aliases: ['call', 'fetch'],
-  }],
-  ['string', {
-    description: 'String normalization, inspection, and text-manipulation helpers.',
-    aliases: ['strings', 'text'],
-  }],
-  ['utility', {
-    description: 'General-purpose reusable helpers when no narrower tag fits.',
-    aliases: ['helper', 'helpers'],
-  }],
-]);
-const DEFAULT_EXCLUDED_DIRS = new Set([
-  '.cache',
-  '.git',
-  '.gradle',
-  '.idea',
-  '.next',
-  '.nuxt',
-  '.output',
-  '.svn',
-  '.turbo',
-  '.vite',
-  '.vscode',
-  'bower_components',
-  'build',
-  'coverage',
-  'dist',
-  'generated',
-  'generated-sources',
-  'generated-test-sources',
-  'node_modules',
-  'out',
-  'target',
-  'vendor',
-]);
-const DEFAULT_EXCLUDED_BASENAMES = new Set([
-  'package-lock.json',
-  'pnpm-lock.yaml',
-  'yarn.lock',
-]);
-const DEFAULT_EXCLUDED_SUFFIXES = [
-  '.map',
-  '.min.css',
-  '.min.js',
-  '.min.mjs',
-  '.min.cjs',
-];
-const UTILITY_PATH_SEGMENTS = new Set([
-  'common',
-  'commons',
-  'composable',
-  'composables',
-  'helper',
-  'helpers',
-  'lib',
-  'shared',
-  'support',
-  'toolkit',
-  'util',
-  'utils',
-]);
-const JAVA_BUSINESS_ROLE_TERMS = [
-  'controller',
-  'service',
-  'mapper',
-  'repository',
-  'entity',
-  'domain',
-  'model',
-  'dto',
-  'vo',
-  'bo',
-  'request',
-  'response',
-  'config',
-  'properties',
-  'exception',
-  'listener',
-  'job',
-  'scheduler',
-  'task',
-];
-const JAVA_BUSINESS_ANNOTATIONS = [
-  '@Controller',
-  '@RestController',
-  '@Service',
-  '@Repository',
-  '@Mapper',
-  '@Entity',
-  '@Configuration',
-  '@SpringBootApplication',
-];
-const JAVA_EXTERNAL_UTILITY_PREFIXES = [
-  'cn.hutool.',
-  'com.google.common.',
-  'org.apache.commons.',
-  'org.springframework.beans.BeanUtils',
-  'org.springframework.util.',
-];
-const JAVA_BUILT_IN_PREFIXES = [
-  'java.',
-  'javax.',
-  'jdk.',
-  'sun.',
-  'com.sun.',
-];
-const JS_EXTERNAL_UTILITY_PACKAGES = new Set([
-  '@vueuse/core',
-  'classnames',
-  'clsx',
-  'date-fns',
-  'dayjs',
-  'lodash',
-  'lodash-es',
-  'nanoid',
-  'qs',
-  'ramda',
-  'underscore',
-  'uuid',
-]);
+Verification accepts only project-owned artifact: selectors.`;
 
 class ToolCatalogError extends Error {
   constructor(message, exitCode = 1) {
@@ -315,112 +108,37 @@ class ToolCatalogError extends Error {
   }
 }
 
-function printHelp() {
-  process.stdout.write(`${HELP_TEXT}\n`);
-}
-
-function printConfigHelp() {
-  process.stdout.write(`${CONFIG_HELP_TEXT}\n`);
-}
-
-function printDiscoverHelp() {
-  process.stdout.write(`${DISCOVER_HELP_TEXT}\n`);
-}
-
-function printQueryHelp() {
-  process.stdout.write(`${QUERY_HELP_TEXT}\n`);
-}
-
-function printTagsHelp() {
-  process.stdout.write(`${TAGS_HELP_TEXT}\n`);
-}
-
-function printShowHelp() {
-  process.stdout.write(`${SHOW_HELP_TEXT}\n`);
-}
-
-function printVerifyHelp() {
-  process.stdout.write(`${VERIFY_HELP_TEXT}\n`);
+function print(text) {
+  process.stdout.write(`${text}\n`);
 }
 
 function parseMajorVersion(version) {
-  const major = Number.parseInt(String(version).split('.')[0], 10);
-  return Number.isNaN(major) ? 0 : major;
-}
-
-function checkNode() {
-  const major = parseMajorVersion(process.versions.node);
-  if (major < MIN_NODE_MAJOR) {
-    return {
-      ok: false,
-      message: `node ${process.versions.node} is too old; Node.js ${MIN_NODE_MAJOR} or newer is required.`,
-    };
-  }
-
-  return {
-    ok: true,
-    message: `node ${process.versions.node}`,
-  };
-}
-
-function checkSqlite3() {
-  const result = spawnSync('sqlite3', ['--version'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  if (result.error?.code === 'ENOENT') {
-    return {
-      ok: false,
-      message: "missing required runtime dependency 'sqlite3'. Install the system sqlite3 CLI and retry.",
-    };
-  }
-
-  if (result.error) {
-    return {
-      ok: false,
-      message: `unable to execute sqlite3: ${result.error.message}`,
-    };
-  }
-
-  if (result.status !== 0) {
-    const detail = (result.stderr || result.stdout || '').trim();
-    return {
-      ok: false,
-      message: detail ? `sqlite3 exited with status ${result.status}: ${detail}` : `sqlite3 exited with status ${result.status}.`,
-    };
-  }
-
-  return {
-    ok: true,
-    message: `sqlite3 ${(result.stdout || '').trim()}`,
-  };
-}
-
-function assertSqlite3Available() {
-  const check = checkSqlite3();
-  if (!check.ok) {
-    throw new ToolCatalogError(`Tool Catalog CLI environment error: ${check.message}`);
-  }
+  const match = String(version).match(/^v?(\d+)/);
+  return match ? Number.parseInt(match[1], 10) : 0;
 }
 
 function checkRuntime() {
-  const checks = [checkNode(), checkSqlite3()];
-  const failures = checks.filter((check) => !check.ok);
+  const nodeOk = parseMajorVersion(process.version) >= MIN_NODE_MAJOR;
+  const sqlite = spawnSync('sqlite3', ['--version'], { encoding: 'utf8' });
+  const sqliteOk = sqlite.status === 0;
+  const lines = [
+    '# Tool Catalog Doctor',
+    '',
+    `- Node.js: ${nodeOk ? 'ok' : 'missing'} (${process.version})`,
+    `- sqlite3: ${sqliteOk ? 'ok' : 'missing'}`,
+  ];
+  print(lines.join('\n'));
+  return nodeOk && sqliteOk;
+}
 
-  if (failures.length > 0) {
-    process.stderr.write('Tool Catalog CLI environment error:\n');
-    for (const failure of failures) {
-      process.stderr.write(`- ${failure.message}\n`);
-    }
-    return false;
+function assertSqlite3Available() {
+  const result = spawnSync('sqlite3', ['--version'], { encoding: 'utf8' });
+  if (result.error?.code === 'ENOENT') {
+    throw new ToolCatalogError("Tool Catalog CLI environment error: missing required runtime dependency 'sqlite3'. Install the system sqlite3 CLI and retry.");
   }
-
-  process.stdout.write('Tool Catalog CLI runtime dependencies are available:\n');
-  for (const check of checks) {
-    process.stdout.write(`- ${check.message}\n`);
+  if (result.status !== 0) {
+    throw new ToolCatalogError("Tool Catalog CLI environment error: unable to run required runtime dependency 'sqlite3'.");
   }
-  return true;
 }
 
 function parseArguments(argv) {
@@ -442,12 +160,11 @@ function parseArguments(argv) {
       continue;
     }
     if (argument === '--root') {
-      const root = argv[index + 1];
-      if (!root) {
+      index += 1;
+      if (index >= argv.length) {
         throw new ToolCatalogError('Missing value for --root.', 2);
       }
-      options.root = root;
-      index += 1;
+      options.root = argv[index];
       continue;
     }
     if (argument.startsWith('--root=')) {
@@ -461,147 +178,62 @@ function parseArguments(argv) {
 }
 
 function parseRepeatedValue(args, index, optionName) {
-  const value = args[index + 1];
-  if (!value || value.startsWith('--')) {
+  if (index.value + 1 >= args.length) {
     throw new ToolCatalogError(`Missing value for ${optionName}.`, 2);
   }
-
-  return value;
+  index.value += 1;
+  return args[index.value];
 }
 
 function appendCommaSeparated(target, value) {
-  for (const item of value.split(',')) {
-    const trimmed = item.trim();
-    if (trimmed) {
-      target.push(trimmed);
+  for (const item of String(value).split(',')) {
+    const normalized = item.trim();
+    if (normalized) {
+      target.push(normalized);
     }
   }
 }
 
 function parseDiscoverOptions(args, globalOptions) {
-  const discoverOptions = {
-    ...globalOptions,
-    dryRun: false,
-    applyPath: undefined,
-    mode: undefined,
-    changedPaths: [],
-    languages: [],
-    includeFilters: [],
-    excludeFilters: [],
-  };
-  let collectingChangedPaths = false;
-
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-
+  const options = { ...globalOptions, applyPath: undefined };
+  for (const index = { value: 0 }; index.value < args.length; index.value += 1) {
+    const argument = args[index.value];
     if (argument === '--help' || argument === '-h') {
-      discoverOptions.help = true;
-      continue;
-    }
-    if (argument === '--dry-run') {
-      discoverOptions.dryRun = true;
+      options.help = true;
       continue;
     }
     if (argument === '--apply') {
-      discoverOptions.applyPath = parseRepeatedValue(args, index, '--apply');
-      collectingChangedPaths = false;
-      index += 1;
+      options.applyPath = parseRepeatedValue(args, index, '--apply');
       continue;
     }
     if (argument.startsWith('--apply=')) {
-      discoverOptions.applyPath = argument.slice('--apply='.length);
-      collectingChangedPaths = false;
+      options.applyPath = argument.slice('--apply='.length);
       continue;
     }
-    if (argument === '--full') {
-      if (discoverOptions.mode && discoverOptions.mode !== 'full') {
-        throw new ToolCatalogError('Use either --full or --changed, not both.', 2);
-      }
-      discoverOptions.mode = 'full';
-      collectingChangedPaths = false;
-      continue;
-    }
-    if (argument === '--changed') {
-      if (discoverOptions.mode && discoverOptions.mode !== 'changed') {
-        throw new ToolCatalogError('Use either --full or --changed, not both.', 2);
-      }
-      discoverOptions.mode = 'changed';
-      collectingChangedPaths = true;
-      continue;
-    }
-    if (argument === '--language') {
-      appendCommaSeparated(discoverOptions.languages, parseRepeatedValue(args, index, '--language'));
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith('--language=')) {
-      appendCommaSeparated(discoverOptions.languages, argument.slice('--language='.length));
-      continue;
-    }
-    if (argument === '--include') {
-      discoverOptions.includeFilters.push(parseRepeatedValue(args, index, '--include'));
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith('--include=')) {
-      discoverOptions.includeFilters.push(argument.slice('--include='.length));
-      continue;
-    }
-    if (argument === '--exclude') {
-      discoverOptions.excludeFilters.push(parseRepeatedValue(args, index, '--exclude'));
-      index += 1;
-      continue;
-    }
-    if (argument.startsWith('--exclude=')) {
-      discoverOptions.excludeFilters.push(argument.slice('--exclude='.length));
-      continue;
+    if (argument === '--full' || argument === '--changed' || argument === '--dry-run' || argument === '--language' || argument === '--include' || argument === '--exclude') {
+      throw new ToolCatalogError('Discovery scanning options were removed. Use tool-catalog discover --apply <decisions.json>.', 2);
     }
     if (argument.startsWith('--')) {
       throw new ToolCatalogError(`Unsupported discover option: ${argument}`, 2);
     }
-    if (!collectingChangedPaths) {
-      throw new ToolCatalogError(`Unexpected discover argument: ${argument}`, 2);
-    }
-    discoverOptions.changedPaths.push(argument);
+    throw new ToolCatalogError(`Unexpected discover argument: ${argument}`, 2);
   }
+  if (!options.help && !options.applyPath) {
+    throw new ToolCatalogError('Discovery requires --apply <decisions.json>.', 2);
+  }
+  return options;
+}
 
-  if (discoverOptions.help) {
-    return discoverOptions;
-  }
-  if (discoverOptions.applyPath) {
-    if (!discoverOptions.applyPath.trim()) {
-      throw new ToolCatalogError('Missing value for --apply.', 2);
+function parseTagsOptions(args, globalOptions) {
+  const options = { ...globalOptions };
+  for (const argument of args) {
+    if (argument === '--help' || argument === '-h') {
+      options.help = true;
+      continue;
     }
-    if (discoverOptions.dryRun) {
-      throw new ToolCatalogError('Use either --dry-run or --apply, not both.', 2);
-    }
-    if (discoverOptions.mode) {
-      throw new ToolCatalogError('Do not pass --full or --changed with --apply; cleanup scope comes from the decisions file.', 2);
-    }
-    if (discoverOptions.languages.length > 0 || discoverOptions.includeFilters.length > 0 || discoverOptions.excludeFilters.length > 0) {
-      throw new ToolCatalogError('Do not pass discovery scan filters with --apply; apply uses the reviewed decisions file.', 2);
-    }
-
-    return discoverOptions;
+    throw new ToolCatalogError(`Unsupported tags option: ${argument}`, 2);
   }
-  if (!discoverOptions.mode) {
-    throw new ToolCatalogError('Discover requires either --full or --changed.', 2);
-  }
-  if (!discoverOptions.dryRun) {
-    throw new ToolCatalogError('This version of discover only supports --dry-run. Apply mode is added by a later issue.', 2);
-  }
-  if (discoverOptions.mode === 'changed' && discoverOptions.changedPaths.length === 0) {
-    throw new ToolCatalogError('Discover --changed requires at least one file or directory path.', 2);
-  }
-
-  discoverOptions.languages = [...new Set(discoverOptions.languages.map((language) => language.toLowerCase()))];
-  for (const language of discoverOptions.languages) {
-    if (!SUPPORTED_LANGUAGES.has(language)) {
-      throw new ToolCatalogError(`Unsupported discovery language '${language}'. Use java, typescript, javascript, or vue.`, 2);
-    }
-  }
-
-  return discoverOptions;
+  return options;
 }
 
 function parsePositiveIntegerOption(value, optionName, maximum) {
@@ -610,47 +242,27 @@ function parsePositiveIntegerOption(value, optionName, maximum) {
     throw new ToolCatalogError(`${optionName} must be a positive integer.`, 2);
   }
   if (integer > maximum) {
-    throw new ToolCatalogError(`${optionName} must be ${maximum} or less.`, 2);
+    throw new ToolCatalogError(`${optionName} must be at most ${maximum}.`, 2);
   }
-
   return integer;
 }
 
-function normalizeCapabilityTagFilter(value, fieldName = 'Capability Tag') {
-  const normalized = normalizeNullableString(value)?.toLowerCase() ?? null;
-  if (!normalized) {
-    throw new ToolCatalogError(`${fieldName} must not be empty.`, 2);
+function normalizeTagValue(value, fieldName = 'Capability Tag') {
+  const tag = normalizeNullableString(value)?.toLowerCase();
+  if (!tag) {
+    throw new ToolCatalogError(`${fieldName} is required.`, 2);
   }
-  if (!CAPABILITY_TAG_PATTERN.test(normalized)) {
-    throw new ToolCatalogError(`${fieldName} '${value}' is invalid. Use lowercase letters, numbers, underscore, or dash.`, 2);
+  if (!TAG_PATTERN.test(tag)) {
+    throw new ToolCatalogError(`${fieldName} '${value}' must be lowercase token or lowercase kebab-case.`, 2);
   }
-  return normalized;
-}
-
-function parseTagsOptions(args, globalOptions) {
-  const tagsOptions = {
-    ...globalOptions,
-  };
-
-  for (const argument of args) {
-    if (argument === '--help' || argument === '-h') {
-      tagsOptions.help = true;
-      continue;
-    }
-    if (argument.startsWith('--')) {
-      throw new ToolCatalogError(`Unsupported tags option: ${argument}`, 2);
-    }
-    throw new ToolCatalogError(`Unexpected tags argument: ${argument}`, 2);
-  }
-
-  return tagsOptions;
+  return tag;
 }
 
 function parseQueryOptions(args, globalOptions) {
-  const queryOptions = {
+  const options = {
     ...globalOptions,
-    goal: undefined,
     tags: [],
+    description: undefined,
     currentFile: undefined,
     languages: [],
     frameworks: [],
@@ -658,74 +270,69 @@ function parseQueryOptions(args, globalOptions) {
     limit: DEFAULT_QUERY_LIMIT,
   };
 
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-
+  for (const index = { value: 0 }; index.value < args.length; index.value += 1) {
+    const argument = args[index.value];
     if (argument === '--help' || argument === '-h') {
-      queryOptions.help = true;
+      options.help = true;
       continue;
     }
-    if (argument === '--goal') {
-      queryOptions.goal = parseRepeatedValue(args, index, '--goal');
-      index += 1;
+    if (argument === '--goal' || argument.startsWith('--goal=')) {
+      throw new ToolCatalogError('Query uses --description, not --goal.', 2);
+    }
+    if (argument === '--description') {
+      options.description = parseRepeatedValue(args, index, '--description');
       continue;
     }
-    if (argument.startsWith('--goal=')) {
-      queryOptions.goal = argument.slice('--goal='.length);
+    if (argument.startsWith('--description=')) {
+      options.description = argument.slice('--description='.length);
       continue;
     }
     if (argument === '--tag') {
-      appendCommaSeparated(queryOptions.tags, parseRepeatedValue(args, index, '--tag'));
-      index += 1;
+      appendCommaSeparated(options.tags, parseRepeatedValue(args, index, '--tag'));
       continue;
     }
     if (argument.startsWith('--tag=')) {
-      appendCommaSeparated(queryOptions.tags, argument.slice('--tag='.length));
+      appendCommaSeparated(options.tags, argument.slice('--tag='.length));
       continue;
     }
     if (argument === '--current-file') {
-      queryOptions.currentFile = parseRepeatedValue(args, index, '--current-file');
-      index += 1;
+      options.currentFile = parseRepeatedValue(args, index, '--current-file');
       continue;
     }
     if (argument.startsWith('--current-file=')) {
-      queryOptions.currentFile = argument.slice('--current-file='.length);
+      options.currentFile = argument.slice('--current-file='.length);
       continue;
     }
     if (argument === '--language') {
-      appendCommaSeparated(queryOptions.languages, parseRepeatedValue(args, index, '--language'));
-      index += 1;
+      appendCommaSeparated(options.languages, parseRepeatedValue(args, index, '--language'));
       continue;
     }
     if (argument.startsWith('--language=')) {
-      appendCommaSeparated(queryOptions.languages, argument.slice('--language='.length));
+      appendCommaSeparated(options.languages, argument.slice('--language='.length));
       continue;
     }
     if (argument === '--framework') {
-      appendCommaSeparated(queryOptions.frameworks, parseRepeatedValue(args, index, '--framework'));
-      index += 1;
+      appendCommaSeparated(options.frameworks, parseRepeatedValue(args, index, '--framework'));
       continue;
     }
     if (argument.startsWith('--framework=')) {
-      appendCommaSeparated(queryOptions.frameworks, argument.slice('--framework='.length));
+      appendCommaSeparated(options.frameworks, argument.slice('--framework='.length));
       continue;
     }
     if (argument === '--artifact-type') {
-      appendCommaSeparated(queryOptions.artifactTypes, parseRepeatedValue(args, index, '--artifact-type'));
-      index += 1;
+      appendCommaSeparated(options.artifactTypes, parseRepeatedValue(args, index, '--artifact-type'));
       continue;
     }
     if (argument.startsWith('--artifact-type=')) {
-      appendCommaSeparated(queryOptions.artifactTypes, argument.slice('--artifact-type='.length));
+      appendCommaSeparated(options.artifactTypes, argument.slice('--artifact-type='.length));
       continue;
     }
     if (argument === '--limit') {
-      queryOptions.limit = parsePositiveIntegerOption(parseRepeatedValue(args, index, '--limit'), '--limit', MAX_QUERY_LIMIT);
-      index += 1;
+      options.limit = parsePositiveIntegerOption(parseRepeatedValue(args, index, '--limit'), '--limit', MAX_QUERY_LIMIT);
       continue;
     }
     if (argument.startsWith('--limit=')) {
-      queryOptions.limit = parsePositiveIntegerOption(argument.slice('--limit='.length), '--limit', MAX_QUERY_LIMIT);
+      options.limit = parsePositiveIntegerOption(argument.slice('--limit='.length), '--limit', MAX_QUERY_LIMIT);
       continue;
     }
     if (argument.startsWith('--')) {
@@ -734,76 +341,62 @@ function parseQueryOptions(args, globalOptions) {
     throw new ToolCatalogError(`Unexpected query argument: ${argument}`, 2);
   }
 
-  if (queryOptions.help) {
-    return queryOptions;
-  }
-  queryOptions.goal = normalizeNullableString(queryOptions.goal);
-  if (!queryOptions.goal) {
-    throw new ToolCatalogError('Query requires --goal <text>.', 2);
+  if (options.help) {
+    return options;
   }
 
-  queryOptions.languages = [...new Set(queryOptions.languages.map((item) => item.toLowerCase()))];
-  queryOptions.frameworks = [...new Set(queryOptions.frameworks.map((item) => item.toLowerCase()))];
-  queryOptions.artifactTypes = [...new Set(queryOptions.artifactTypes.map((item) => item.toLowerCase()))];
-  queryOptions.tags = [...new Set(queryOptions.tags.map((item) => normalizeCapabilityTagFilter(item, '--tag')))];
-
-  return queryOptions;
+  options.description = normalizeNullableString(options.description);
+  options.tags = [...new Set(options.tags.map((tag) => normalizeTagValue(tag, '--tag')))];
+  options.languages = [...new Set(options.languages.map((item) => item.toLowerCase()))];
+  options.frameworks = [...new Set(options.frameworks.map((item) => item.toLowerCase()))];
+  options.artifactTypes = [...new Set(options.artifactTypes.map((item) => item.toLowerCase()))];
+  if (options.tags.length === 0 && !options.description) {
+    throw new ToolCatalogError('Query requires at least one of --tag or --description.', 2);
+  }
+  normalizeCurrentFile(options.root ? normalizePath(options.root) : process.cwd(), options.currentFile);
+  return options;
 }
 
 function parseSelectorCommandOptions(args, globalOptions, commandName) {
-  const selectorOptions = {
-    ...globalOptions,
-    selector: undefined,
-  };
-
+  const options = { ...globalOptions, selector: undefined };
   for (const argument of args) {
     if (argument === '--help' || argument === '-h') {
-      selectorOptions.help = true;
+      options.help = true;
       continue;
     }
     if (argument.startsWith('--')) {
       throw new ToolCatalogError(`Unsupported ${commandName} option: ${argument}`, 2);
     }
-    if (selectorOptions.selector) {
-      throw new ToolCatalogError(`${commandName} accepts exactly one selector.`, 2);
+    if (options.selector) {
+      throw new ToolCatalogError(`Unexpected ${commandName} argument: ${argument}`, 2);
     }
-    selectorOptions.selector = argument;
+    options.selector = argument;
   }
-
-  if (selectorOptions.help) {
-    return selectorOptions;
+  if (!options.help && !options.selector) {
+    throw new ToolCatalogError(`Missing selector. Usage: tool-catalog ${commandName} <selector> [--root <path>]`, 2);
   }
-  selectorOptions.selector = normalizeNullableString(selectorOptions.selector);
-  if (!selectorOptions.selector) {
-    throw new ToolCatalogError(`${commandName} requires a selector.`, 2);
-  }
-
-  return selectorOptions;
+  return options;
 }
 
 function expandHome(input) {
+  if (!input) {
+    return input;
+  }
   if (input === '~') {
     return os.homedir();
   }
-  if (input.startsWith(`~${path.sep}`) || input.startsWith('~/')) {
+  if (input.startsWith('~/')) {
     return path.join(os.homedir(), input.slice(2));
   }
   return input;
 }
 
 function normalizePath(input) {
-  const resolved = path.resolve(expandHome(input));
-  try {
-    return fs.realpathSync.native(resolved);
-  } catch {
-    return path.normalize(resolved);
-  }
+  return path.resolve(expandHome(input));
 }
 
 function getCatalogHome() {
-  const override = process.env.TOOL_CATALOG_HOME?.trim();
-  const root = override ? expandHome(override) : path.join(os.homedir(), DEFAULT_CATALOG_DIR);
-  return path.resolve(root);
+  return normalizePath(process.env.TOOL_CATALOG_HOME || path.join(os.homedir(), DEFAULT_CATALOG_DIR));
 }
 
 function getConfigPath(catalogHome) {
@@ -811,27 +404,7 @@ function getConfigPath(catalogHome) {
 }
 
 function defaultConfig() {
-  return {
-    version: 1,
-    project_mappings: {},
-  };
-}
-
-function normalizeConfig(config) {
-  if (!config || typeof config !== 'object' || Array.isArray(config)) {
-    return defaultConfig();
-  }
-
-  const normalized = {
-    ...config,
-    version: 1,
-  };
-
-  if (!normalized.project_mappings || typeof normalized.project_mappings !== 'object' || Array.isArray(normalized.project_mappings)) {
-    normalized.project_mappings = {};
-  }
-
-  return normalized;
+  return { version: 1, projects: {} };
 }
 
 function readUserConfig(catalogHome) {
@@ -839,10 +412,12 @@ function readUserConfig(catalogHome) {
   if (!fs.existsSync(configPath)) {
     return defaultConfig();
   }
-
   try {
-    const contents = fs.readFileSync(configPath, 'utf8');
-    return normalizeConfig(JSON.parse(contents));
+    const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return {
+      version: 1,
+      projects: parsed.projects && typeof parsed.projects === 'object' ? parsed.projects : {},
+    };
   } catch (error) {
     throw new ToolCatalogError(`Unable to read Tool Catalog config ${configPath}: ${error.message}`);
   }
@@ -850,199 +425,60 @@ function readUserConfig(catalogHome) {
 
 function writeUserConfig(catalogHome, config) {
   fs.mkdirSync(catalogHome, { recursive: true });
-  const configPath = getConfigPath(catalogHome);
-  const tempPath = `${configPath}.${process.pid}.tmp`;
-  fs.writeFileSync(tempPath, `${JSON.stringify(normalizeConfig(config), null, 2)}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
-  fs.renameSync(tempPath, configPath);
+  fs.writeFileSync(getConfigPath(catalogHome), `${JSON.stringify(config, null, 2)}\n`, 'utf8');
 }
 
 function runCommand(command, args, options = {}) {
   const result = spawnSync(command, args, {
+    cwd: options.cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
-    ...options,
   });
-
-  if (result.error || result.status !== 0) {
+  if (result.status !== 0) {
     return null;
   }
-
-  const output = (result.stdout || '').trim();
-  return output || null;
+  return result.stdout.trim();
 }
 
 function resolveTargetRoot(options) {
   if (options.root) {
     return normalizePath(options.root);
   }
-
-  const gitRoot = runCommand('git', ['rev-parse', '--show-toplevel'], {
-    cwd: process.cwd(),
-  });
+  const gitRoot = runCommand('git', ['rev-parse', '--show-toplevel'], { cwd: process.cwd() });
   return normalizePath(gitRoot || process.cwd());
 }
 
-function resolveGitCommonDir(rootPath) {
-  const commonDir = runCommand('git', ['-C', rootPath, 'rev-parse', '--git-common-dir']);
-  if (!commonDir) {
-    return null;
-  }
-
-  const absolutePath = path.isAbsolute(commonDir) ? commonDir : path.resolve(rootPath, commonDir);
-  return normalizePath(absolutePath);
-}
-
-function resolveRemoteUrl(rootPath) {
-  const remote = runCommand('git', ['-C', rootPath, 'config', '--get', 'remote.origin.url']);
-  return remote ? normalizeRemoteUrl(remote) : null;
-}
-
-function normalizeRemoteUrl(remote) {
-  const value = remote.trim();
-  const scpMatch = value.match(/^(?:[^@]+@)?([^:]+):(.+)$/);
-  const urlLike = value.includes('://') ? value : null;
-  const normalizedInput = urlLike || (scpMatch ? `ssh://${scpMatch[1]}/${scpMatch[2]}` : value);
-
-  try {
-    const url = new URL(normalizedInput);
-    const host = url.hostname.toLowerCase();
-    const port = url.port ? `:${url.port}` : '';
-    const remotePath = normalizeRemotePath(url.pathname);
-    return remotePath ? `${host}${port}/${remotePath}` : `${host}${port}`;
-  } catch {
-    return normalizeRemotePath(value.replace(/\\/g, '/'));
-  }
-}
-
-function normalizeRemotePath(remotePath) {
-  return remotePath
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
-    .replace(/\.git$/i, '')
-    .replace(/\/+/g, '/');
-}
-
 function sha256(value) {
-  return createHash('sha256').update(value).digest('hex');
+  return createHash('sha256').update(String(value)).digest('hex');
 }
 
 function safeSlug(value) {
-  const slug = value
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 32);
-  return slug || 'project';
+  return String(value).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'project';
 }
 
-function deriveProjectId(signal) {
-  const prefix = signal.source === 'project-root' ? 'path' : signal.source.replace(/-+/g, '-');
-  const nameSource = signal.source === 'remote-url' ? signal.key.split('/').at(-1) : path.basename(signal.key);
-  return `${prefix}-${safeSlug(nameSource)}-${sha256(signal.key).slice(0, 12)}`;
+function deriveProjectId(rootPath) {
+  return `${safeSlug(path.basename(rootPath))}-${sha256(rootPath).slice(0, 12)}`;
 }
 
-function buildIdentitySignals(rootPath) {
-  const signals = [];
-  const commonDir = resolveGitCommonDir(rootPath);
-  const remoteUrl = resolveRemoteUrl(rootPath);
-
-  if (commonDir) {
-    signals.push({
-      source: 'git-common-dir',
-      key: commonDir,
-      projectId: deriveProjectId({ source: 'git-common-dir', key: commonDir }),
-    });
-  }
-
-  if (remoteUrl) {
-    signals.push({
-      source: 'remote-url',
-      key: remoteUrl,
-      projectId: deriveProjectId({ source: 'remote-url', key: remoteUrl }),
-    });
-  }
-
-  signals.push({
-    source: 'project-root',
-    key: rootPath,
-    projectId: deriveProjectId({ source: 'project-root', key: rootPath }),
-  });
-
-  return signals;
-}
-
-function mappingKey(signal) {
-  return `${signal.source}:${signal.key}`;
-}
-
-function getExplicitProjectId(config, signals) {
-  for (const signal of signals) {
-    const mapping = config.project_mappings[mappingKey(signal)];
-    if (mapping?.project_id && isValidProjectId(mapping.project_id)) {
-      return {
-        projectId: mapping.project_id,
-        identitySource: 'explicit-project-id',
-        identityKey: mappingKey(signal),
-        matchedSignal: signal.source,
-      };
-    }
-  }
-
-  return null;
-}
-
-function resolveProjectIdentity(config, signals) {
-  const explicit = getExplicitProjectId(config, signals);
-  if (explicit) {
-    return explicit;
-  }
-
-  const signal = signals[0];
-  return {
-    projectId: signal.projectId,
-    identitySource: signal.source,
-    identityKey: signal.key,
-    matchedSignal: signal.source,
-  };
+function mappingKey(rootPath) {
+  return `root:${rootPath}`;
 }
 
 function isValidProjectId(projectId) {
-  return PROJECT_ID_PATTERN.test(projectId) && projectId !== '.' && projectId !== '..';
+  return PROJECT_ID_PATTERN.test(projectId);
 }
 
 function assertValidProjectId(projectId) {
-  if (isValidProjectId(projectId)) {
-    return;
+  if (!isValidProjectId(projectId)) {
+    throw new ToolCatalogError(`Invalid project id '${projectId}'. Use ${PROJECT_ID_PATTERN}.`, 2);
   }
-
-  throw new ToolCatalogError('Invalid project id. Use 1-128 characters from A-Z, a-z, 0-9, dot, underscore, or dash, and do not use path separators.', 2);
-}
-
-function setExplicitProjectId(config, rootPath, signals, projectId) {
-  const nextConfig = normalizeConfig(JSON.parse(JSON.stringify(config)));
-  const updatedAt = new Date().toISOString();
-
-  for (const signal of signals) {
-    nextConfig.project_mappings[mappingKey(signal)] = {
-      project_id: projectId,
-      root_path: rootPath,
-      signal_source: signal.source,
-      signal_key: signal.key,
-      updated_at: updatedAt,
-    };
-  }
-
-  return nextConfig;
 }
 
 function getProjectPaths(catalogHome, projectId) {
   const projectDir = path.join(catalogHome, 'projects', projectId);
   return {
     projectDir,
-    dbPath: path.join(projectDir, 'catalog.sqlite'),
+    dbPath: path.join(projectDir, 'index.sqlite'),
     lockPath: path.join(projectDir, 'apply.lock'),
   };
 }
@@ -1050,39 +486,27 @@ function getProjectPaths(catalogHome, projectId) {
 function createProjectContext(options, config) {
   const catalogHome = getCatalogHome();
   const rootPath = resolveTargetRoot(options);
-  const signals = buildIdentitySignals(rootPath);
-  const identity = resolveProjectIdentity(config, signals);
-  const paths = getProjectPaths(catalogHome, identity.projectId);
-
+  const explicit = config.projects?.[mappingKey(rootPath)]?.project_id;
+  const projectId = explicit || deriveProjectId(rootPath);
+  assertValidProjectId(projectId);
   return {
-    ...identity,
     catalogHome,
-    configPath: getConfigPath(catalogHome),
     rootPath,
-    signals,
-    ...paths,
+    projectId,
+    identitySource: explicit ? 'config' : 'root',
+    identityKey: rootPath,
+    ...getProjectPaths(catalogHome, projectId),
   };
 }
 
-function loadMigrations() {
-  const cliDir = path.dirname(fileURLToPath(import.meta.url));
-  const migrationsDir = path.resolve(cliDir, '..', 'migrations');
-  const names = fs.readdirSync(migrationsDir)
-    .filter((name) => /^\d+-[A-Za-z0-9._-]+\.sql$/.test(name))
-    .sort();
-
-  if (names.length === 0) {
-    throw new ToolCatalogError(`No Tool Catalog migrations found under ${migrationsDir}.`);
-  }
-
-  return names.map((name) => {
-    const version = Number.parseInt(name.split('-')[0], 10);
-    return {
-      version,
-      name,
-      sql: fs.readFileSync(path.join(migrationsDir, name), 'utf8'),
-    };
-  });
+function projectContextToOutput(context) {
+  return {
+    project_id: context.projectId,
+    root_path: context.rootPath,
+    catalog_path: context.dbPath,
+    identity_source: context.identitySource,
+    identity_key: context.identityKey,
+  };
 }
 
 function runSqlite(dbPath, sql, options = {}) {
@@ -1095,47 +519,24 @@ function runSqlite(dbPath, sql, options = {}) {
     args.push('-json');
   }
   args.push(dbPath);
-
   const result = spawnSync('sqlite3', args, {
     encoding: 'utf8',
     input: sql,
     maxBuffer: SQLITE_MAX_BUFFER,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-
-  if (result.error?.code === 'ENOENT') {
-    throw new ToolCatalogError("Tool Catalog CLI environment error: missing required runtime dependency 'sqlite3'. Install the system sqlite3 CLI and retry.");
-  }
-  if (result.error) {
-    throw new ToolCatalogError(`Unable to execute sqlite3: ${result.error.message}`);
-  }
   if (result.status !== 0) {
     const detail = (result.stderr || result.stdout || '').trim();
     throw new ToolCatalogError(detail ? `sqlite3 failed for ${dbPath}: ${detail}` : `sqlite3 failed for ${dbPath}.`);
   }
-
   return result.stdout || '';
 }
 
-function runSqliteJson(dbPath, sql) {
-  const output = runSqlite(dbPath, sql, { json: true }).trim();
+function runSqliteJson(dbPath, sql, options = {}) {
+  const output = runSqlite(dbPath, sql, { ...options, json: true }).trim();
   if (!output) {
     return [];
   }
-
-  try {
-    return JSON.parse(output);
-  } catch (error) {
-    throw new ToolCatalogError(`Unable to parse sqlite3 JSON output: ${error.message}`);
-  }
-}
-
-function runSqliteReadOnlyJson(dbPath, sql) {
-  const output = runSqlite(dbPath, sql, { json: true, readOnly: true }).trim();
-  if (!output) {
-    return [];
-  }
-
   try {
     return JSON.parse(output);
   } catch (error) {
@@ -1147,7 +548,6 @@ function sqlString(value) {
   if (value === null || value === undefined) {
     return 'NULL';
   }
-
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
@@ -1155,77 +555,8 @@ function sqlInteger(value) {
   if (value === null || value === undefined) {
     return 'NULL';
   }
-
   const integer = Number.parseInt(value, 10);
-  if (!Number.isFinite(integer)) {
-    return 'NULL';
-  }
-  return String(integer);
-}
-
-function sqlStringList(values) {
-  const uniqueValues = [...new Set(values.filter((value) => value !== null && value !== undefined).map(String))];
-  if (uniqueValues.length === 0) {
-    return null;
-  }
-
-  return uniqueValues.map((value) => sqlString(value)).join(', ');
-}
-
-function normalizeNullableString(value) {
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  const normalized = String(value).trim();
-  return normalized || null;
-}
-
-function truncateText(value, maxLength) {
-  const normalized = normalizeNullableString(value);
-  if (!normalized) {
-    return null;
-  }
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength - 3)}...`;
-}
-
-function normalizeRequiredText(value, fieldName, maxLength = MAX_SUMMARY_CHARS) {
-  const normalized = truncateText(value, maxLength);
-  if (!normalized) {
-    throw new ToolCatalogError(`${fieldName} is required.`, 2);
-  }
-
-  return normalized;
-}
-
-function normalizeCapabilityTags(value, fieldName) {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new ToolCatalogError(`${fieldName} must include at least one Capability Tag.`, 2);
-  }
-
-  const byTag = new Map();
-  for (const item of value) {
-    const rawTag = isPlainObject(item) ? item.tag : item;
-    const tag = normalizeNullableString(rawTag)?.toLowerCase() ?? null;
-    if (!tag) {
-      throw new ToolCatalogError(`${fieldName} entries must include a tag value.`, 2);
-    }
-    if (!CAPABILITY_TAG_PATTERN.test(tag)) {
-      throw new ToolCatalogError(`${fieldName} contains invalid tag '${rawTag}'. Use lowercase letters, numbers, underscore, or dash.`, 2);
-    }
-
-    const description = isPlainObject(item) ? truncateText(item.description, MAX_SUMMARY_CHARS) : null;
-    byTag.set(tag, {
-      tag,
-      description: description ?? byTag.get(tag)?.description ?? null,
-    });
-  }
-
-  return [...byTag.values()];
+  return Number.isFinite(integer) ? String(integer) : 'NULL';
 }
 
 function transactionSql(sql) {
@@ -1236,58 +567,52 @@ COMMIT;
 `;
 }
 
+function loadMigrations() {
+  const cliDir = path.dirname(fileURLToPath(import.meta.url));
+  const migrationsDir = path.resolve(cliDir, '..', 'migrations');
+  return fs.readdirSync(migrationsDir)
+    .filter((name) => /^\d+-[A-Za-z0-9._-]+\.sql$/.test(name))
+    .sort()
+    .map((name) => ({
+      version: Number.parseInt(name.split('-')[0], 10),
+      name,
+      sql: fs.readFileSync(path.join(migrationsDir, name), 'utf8'),
+    }));
+}
+
 function getSchemaVersion(dbPath) {
   if (!fs.existsSync(dbPath)) {
     return 0;
   }
-
-  const metadataTables = runSqliteJson(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'metadata';");
-  if (metadataTables.length === 0) {
+  const tables = runSqliteJson(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'metadata';");
+  if (tables.length === 0) {
     return 0;
   }
-
   const rows = runSqliteJson(dbPath, "SELECT value FROM metadata WHERE key = 'schema_version';");
-  const version = Number.parseInt(rows[0]?.value ?? '0', 10);
-  return Number.isNaN(version) ? 0 : version;
+  return Number.parseInt(rows[0]?.value ?? '0', 10) || 0;
 }
 
 function applyMigrations(dbPath) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const migrations = loadMigrations();
   const currentVersion = getSchemaVersion(dbPath);
-
-  for (const migration of migrations) {
-    if (migration.version <= currentVersion) {
-      continue;
+  for (const migration of loadMigrations()) {
+    if (migration.version > currentVersion) {
+      runSqlite(dbPath, migration.sql);
     }
-    runSqlite(dbPath, migration.sql);
   }
 }
 
 function upsertProjectRecord(context) {
-  const sql = `
-INSERT INTO projects (
-  id,
-  root_path,
-  identity_source,
-  identity_key,
-  catalog_home,
-  updated_at
-) VALUES (
-  ${sqlString(context.projectId)},
-  ${sqlString(context.rootPath)},
-  ${sqlString(context.identitySource)},
-  ${sqlString(context.identityKey)},
-  ${sqlString(context.catalogHome)},
-  datetime('now')
-) ON CONFLICT(id) DO UPDATE SET
+  runSqlite(context.dbPath, transactionSql(`
+INSERT INTO projects (id, root_path, identity_source, identity_key, catalog_home, updated_at)
+VALUES (${sqlString(context.projectId)}, ${sqlString(context.rootPath)}, ${sqlString(context.identitySource)}, ${sqlString(context.identityKey)}, ${sqlString(context.catalogHome)}, datetime('now'))
+ON CONFLICT(id) DO UPDATE SET
   root_path = excluded.root_path,
   identity_source = excluded.identity_source,
   identity_key = excluded.identity_key,
   catalog_home = excluded.catalog_home,
   updated_at = datetime('now');
-`;
-  runSqlite(context.dbPath, transactionSql(sql));
+`));
 }
 
 function ensureProjectIndex(context) {
@@ -1295,3853 +620,20 @@ function ensureProjectIndex(context) {
   upsertProjectRecord(context);
 }
 
-function acquireProjectApplyLock(context) {
-  fs.mkdirSync(context.projectDir, { recursive: true });
-
-  let fileDescriptor;
-  try {
-    fileDescriptor = fs.openSync(context.lockPath, 'wx', 0o600);
-    fs.writeFileSync(fileDescriptor, JSON.stringify({
-      pid: process.pid,
-      project_id: context.projectId,
-      created_at: new Date().toISOString(),
-    }, null, 2));
-  } catch (error) {
-    if (error.code === 'EEXIST') {
-      throw new ToolCatalogError(`Another discovery apply operation is already running for project ${context.projectId}.`);
-    }
-    throw error;
-  }
-
-  return {
-    release() {
-      if (fileDescriptor !== undefined) {
-        fs.closeSync(fileDescriptor);
-        fileDescriptor = undefined;
-      }
-      try {
-        fs.unlinkSync(context.lockPath);
-      } catch (error) {
-        if (error.code !== 'ENOENT') {
-          throw error;
-        }
-      }
-    },
-  };
-}
-
-function withProjectApplyLock(context, callback) {
-  const lock = acquireProjectApplyLock(context);
-  try {
-    return callback();
-  } finally {
-    lock.release();
-  }
-}
-
-function runProjectApplyTransaction(context, sql) {
-  return withProjectApplyLock(context, () => runSqlite(context.dbPath, transactionSql(sql)));
-}
-
-function projectContextToOutput(context) {
-  return {
-    project_id: context.projectId,
-    identity_source: context.identitySource,
-    identity_key: context.identityKey,
-    matched_signal: context.matchedSignal,
-    root_path: context.rootPath,
-    catalog_home: context.catalogHome,
-    catalog_path: context.dbPath,
-    config_path: context.configPath,
-    apply_lock_path: context.lockPath,
-  };
-}
-
-function printProjectContext(context, options, leadLine) {
-  const output = projectContextToOutput(context);
-  if (options.json) {
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
-  }
-
-  if (leadLine) {
-    process.stdout.write(`${leadLine}\n`);
-  }
-
-  process.stdout.write(`Project identity:
-- project_id: ${output.project_id}
-- identity_source: ${output.identity_source}
-- identity_key: ${output.identity_key}
-- root_path: ${output.root_path}
-- catalog_home: ${output.catalog_home}
-- catalog_path: ${output.catalog_path}
-`);
-}
-
-function toPosixPath(input) {
-  return input.replace(/\\/g, '/');
-}
-
-function normalizeRelativePath(input) {
-  return toPosixPath(input).replace(/^\.\/+/, '').replace(/\/+/g, '/');
-}
-
-function getRelativePath(rootPath, absolutePath) {
-  return normalizeRelativePath(path.relative(rootPath, absolutePath));
-}
-
-function getPathSegments(relativePath) {
-  return normalizeRelativePath(relativePath).split('/').filter(Boolean);
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
-}
-
-function globToRegExp(pattern) {
-  const normalized = normalizeRelativePath(pattern);
-  let source = '';
-
-  for (let index = 0; index < normalized.length; index += 1) {
-    const character = normalized[index];
-    const nextCharacter = normalized[index + 1];
-    if (character === '*' && nextCharacter === '*') {
-      source += '.*';
-      index += 1;
-      continue;
-    }
-    if (character === '*') {
-      source += '[^/]*';
-      continue;
-    }
-    if (character === '?') {
-      source += '[^/]';
-      continue;
-    }
-    source += escapeRegExp(character);
-  }
-
-  return new RegExp(`^${source}$`);
-}
-
-function matchesPathPattern(relativePath, pattern) {
-  const normalizedPath = normalizeRelativePath(relativePath);
-  const normalizedPattern = normalizeRelativePath(pattern);
-  if (!normalizedPattern) {
-    return false;
-  }
-
-  if (normalizedPattern.endsWith('/')) {
-    const directoryPattern = normalizedPattern.replace(/\/+$/, '');
-    return normalizedPath === directoryPattern || normalizedPath.startsWith(`${directoryPattern}/`);
-  }
-
-  if (!normalizedPattern.includes('/')) {
-    const basename = path.posix.basename(normalizedPath);
-    return globToRegExp(normalizedPattern).test(basename);
-  }
-
-  return globToRegExp(normalizedPattern).test(normalizedPath);
-}
-
-function matchesAnyPathPattern(relativePath, patterns) {
-  return patterns.some((pattern) => matchesPathPattern(relativePath, pattern));
-}
-
-function parseGitignore(rootPath) {
-  const gitignorePath = path.join(rootPath, '.gitignore');
-  if (!fs.existsSync(gitignorePath)) {
-    return [];
-  }
-
-  return fs.readFileSync(gitignorePath, 'utf8')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#') && !line.startsWith('!'));
-}
-
-function isIgnoredByGitignore(relativePath, gitignorePatterns) {
-  return matchesAnyPathPattern(relativePath, gitignorePatterns);
-}
-
-function hasDefaultExcludedPath(relativePath) {
-  const normalizedPath = normalizeRelativePath(relativePath);
-  const basename = path.posix.basename(normalizedPath);
-  const lowerBasename = basename.toLowerCase();
-  const segments = getPathSegments(normalizedPath).map((segment) => segment.toLowerCase());
-
-  if (segments.some((segment) => DEFAULT_EXCLUDED_DIRS.has(segment))) {
-    return true;
-  }
-  if (DEFAULT_EXCLUDED_BASENAMES.has(lowerBasename)) {
-    return true;
-  }
-  if (DEFAULT_EXCLUDED_SUFFIXES.some((suffix) => lowerBasename.endsWith(suffix))) {
-    return true;
-  }
-  if (lowerBasename.includes('.generated.') || lowerBasename.includes('.gen.') || lowerBasename.includes('.pb.')) {
-    return true;
-  }
-
-  return false;
-}
-
-function detectLanguage(relativePath) {
-  return SUPPORTED_EXTENSIONS.get(path.extname(relativePath).toLowerCase()) ?? null;
-}
-
-function isInsideRoot(rootPath, absolutePath) {
-  const relativePath = path.relative(rootPath, absolutePath);
-  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
-}
-
-function listGitProjectFiles(rootPath) {
-  const result = spawnSync('git', ['-C', rootPath, 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  if (result.error || result.status !== 0) {
-    return null;
-  }
-
-  return (result.stdout || '')
-    .split('\0')
-    .map((item) => normalizeRelativePath(item))
-    .filter(Boolean);
-}
-
-function walkProjectFiles(rootPath, currentPath, gitignorePatterns, files) {
-  for (const entry of fs.readdirSync(currentPath, { withFileTypes: true })) {
-    const absolutePath = path.join(currentPath, entry.name);
-    const relativePath = getRelativePath(rootPath, absolutePath);
-    if (isIgnoredByGitignore(relativePath, gitignorePatterns)) {
-      continue;
-    }
-
-    if (entry.isDirectory()) {
-      if (hasDefaultExcludedPath(relativePath)) {
-        continue;
-      }
-      walkProjectFiles(rootPath, absolutePath, gitignorePatterns, files);
-      continue;
-    }
-
-    if (entry.isFile()) {
-      files.push(relativePath);
-    }
-  }
-}
-
-function listProjectFiles(rootPath) {
-  const gitFiles = listGitProjectFiles(rootPath);
-  if (gitFiles) {
-    return {
-      files: gitFiles,
-      source: 'git-ls-files-exclude-standard',
-    };
-  }
-
-  const files = [];
-  walkProjectFiles(rootPath, rootPath, parseGitignore(rootPath), files);
-  return {
-    files,
-    source: 'filesystem-walk-with-root-gitignore',
-  };
-}
-
-function resolveChangedScopes(rootPath, changedPaths) {
-  return changedPaths.map((inputPath) => {
-    const absolutePath = path.resolve(rootPath, expandHome(inputPath));
-    if (!isInsideRoot(rootPath, absolutePath)) {
-      throw new ToolCatalogError(`Changed path is outside the target project root: ${inputPath}`, 2);
-    }
-
-    const relativePath = getRelativePath(rootPath, absolutePath);
-    return {
-      input: inputPath,
-      relativePath,
-      absolutePath,
-      exists: fs.existsSync(absolutePath),
-      isDirectory: fs.existsSync(absolutePath) && fs.statSync(absolutePath).isDirectory(),
-    };
-  });
-}
-
-function isInChangedScopes(relativePath, changedScopes) {
-  return changedScopes.some((scope) => {
-    if (!scope.exists) {
-      return false;
-    }
-    if (scope.isDirectory) {
-      return relativePath === scope.relativePath || relativePath.startsWith(`${scope.relativePath}/`);
-    }
-    return relativePath === scope.relativePath;
-  });
-}
-
-function shouldScanFile(relativePath, discoverOptions) {
-  const language = detectLanguage(relativePath);
-  const explicitInclude = discoverOptions.includeFilters.length > 0
-    && matchesAnyPathPattern(relativePath, discoverOptions.includeFilters);
-
-  if (!language) {
-    return { scan: false, reason: 'unsupported-extension' };
-  }
-  if (discoverOptions.languages.length > 0 && !discoverOptions.languages.includes(language)) {
-    return { scan: false, reason: 'language-filter' };
-  }
-  if (hasDefaultExcludedPath(relativePath) && !explicitInclude) {
-    return { scan: false, reason: 'default-exclusion' };
-  }
-  if (discoverOptions.includeFilters.length > 0 && !explicitInclude) {
-    return { scan: false, reason: 'include-filter' };
-  }
-  if (matchesAnyPathPattern(relativePath, discoverOptions.excludeFilters)) {
-    return { scan: false, reason: 'exclude-filter' };
-  }
-
-  return { scan: true, language };
-}
-
-function buildScanScope(rootPath, discoverOptions) {
-  const listed = listProjectFiles(rootPath);
-  const changedScopes = discoverOptions.mode === 'changed'
-    ? resolveChangedScopes(rootPath, discoverOptions.changedPaths)
-    : [];
-  const files = [];
-  const skippedByReason = {};
-  let scopedFiles = listed.files;
-
-  if (discoverOptions.mode === 'changed') {
-    scopedFiles = listed.files.filter((relativePath) => isInChangedScopes(relativePath, changedScopes));
-  }
-
-  for (const relativePath of scopedFiles) {
-    const decision = shouldScanFile(relativePath, discoverOptions);
-    if (!decision.scan) {
-      skippedByReason[decision.reason] = (skippedByReason[decision.reason] ?? 0) + 1;
-      continue;
-    }
-
-    const absolutePath = path.join(rootPath, relativePath);
-    let size = 0;
-    try {
-      size = fs.statSync(absolutePath).size;
-    } catch {
-      skippedByReason['missing-file'] = (skippedByReason['missing-file'] ?? 0) + 1;
-      continue;
-    }
-    if (size > MAX_SCAN_FILE_BYTES) {
-      skippedByReason['file-too-large'] = (skippedByReason['file-too-large'] ?? 0) + 1;
-      continue;
-    }
-
-    files.push({
-      absolutePath,
-      relativePath,
-      language: decision.language,
-      size,
-    });
-  }
-
-  for (const scope of changedScopes) {
-    if (!scope.exists) {
-      skippedByReason['changed-path-missing'] = (skippedByReason['changed-path-missing'] ?? 0) + 1;
-    }
-  }
-
-  return {
-    source: listed.source,
-    files,
-    filesConsidered: listed.files.length,
-    scopedFiles: scopedFiles.length,
-    skippedByReason,
-    changedScopes,
-  };
-}
-
-function readScanFiles(scanFiles) {
-  return scanFiles.map((file) => {
-    const text = fs.readFileSync(file.absolutePath, 'utf8');
-    return {
-      ...file,
-      text,
-      lines: text.split(/\r?\n/),
-    };
-  });
-}
-
-function lineNumberForIndex(text, index) {
-  return text.slice(0, index).split(/\r?\n/).length;
-}
-
-function makeSourceAnchor(relativePath, line, symbol) {
-  return {
-    path: relativePath,
-    line,
-    symbol,
-    text: `${relativePath}:${line}${symbol ? `#${symbol}` : ''}`,
-  };
-}
-
-function uniqueByKey(items, keySelector) {
-  const seen = new Set();
-  const result = [];
-  for (const item of items) {
-    const key = keySelector(item);
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    result.push(item);
-  }
-  return result;
-}
-
-function getModulePath(relativePath) {
-  const segments = getPathSegments(relativePath);
-  const srcIndex = segments.indexOf('src');
-  if (srcIndex > 0) {
-    return segments.slice(0, srcIndex).join('/') || null;
-  }
-  if (segments.includes('pom.xml')) {
-    return segments.slice(0, -1).join('/') || null;
-  }
-  return segments.length > 1 ? segments[0] : null;
-}
-
-function getJavaPackage(text) {
-  return text.match(/^\s*package\s+([A-Za-z_][\w.]*);/m)?.[1] ?? null;
-}
-
-function getJavaClass(text) {
-  const match = text.match(/^\s*(?:public\s+)?(?:final\s+|abstract\s+)?class\s+([A-Za-z_]\w*)\b/m);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    name: match[1],
-    line: lineNumberForIndex(text, match.index ?? 0),
-  };
-}
-
-function hasJavaBusinessRole(record, className) {
-  const lowerPath = record.relativePath.toLowerCase();
-  const lowerClassName = className.toLowerCase();
-  if (JAVA_BUSINESS_ROLE_TERMS.some((term) => lowerPath.includes(`/${term}/`) || lowerClassName.endsWith(term))) {
-    return true;
-  }
-  if (JAVA_BUSINESS_ANNOTATIONS.some((annotation) => record.text.includes(annotation))) {
-    return true;
-  }
-
-  return false;
-}
-
-function extractJavaStaticMethods(record, qualifiedName) {
-  const methods = [];
-  const methodPattern = /^\s*public\s+static\s+(?:final\s+)?(?:<[^>]+>\s+)?([A-Za-z_$][\w$<>\[\], ?.&]+)\s+([A-Za-z_$][\w$]*)\s*\(([^;{}]*)\)\s*(?:throws\s+[^{;]+)?[{;]/;
-
-  record.lines.forEach((line, index) => {
-    const match = line.match(methodPattern);
-    if (!match || match[2] === 'main') {
-      return;
-    }
-
-    const name = match[2];
-    const signature = line.trim().replace(/\s+/g, ' ').replace(/\s*\{\s*$/, '');
-    methods.push({
-      member_key: `${qualifiedName}#${name}`,
-      name,
-      member_type: 'method',
-      signature,
-      source_anchor: makeSourceAnchor(record.relativePath, index + 1, `${qualifiedName}#${name}`),
-    });
-  });
-
-  return methods;
-}
-
-function extractJavaUtilityCandidate(record) {
-  const javaClass = getJavaClass(record.text);
-  if (!javaClass) {
-    return null;
-  }
-
-  const packageName = getJavaPackage(record.text);
-  const qualifiedName = packageName ? `${packageName}.${javaClass.name}` : javaClass.name;
-  if (hasJavaBusinessRole(record, javaClass.name)) {
-    return null;
-  }
-
-  const segments = getPathSegments(record.relativePath).map((segment) => segment.toLowerCase());
-  const utilityPath = segments.some((segment) => UTILITY_PATH_SEGMENTS.has(segment));
-  const utilityPackage = packageName ? packageName.split('.').some((segment) => UTILITY_PATH_SEGMENTS.has(segment.toLowerCase())) : false;
-  const utilityName = /(Util|Utils|Helper|Helpers|Toolkit|Support)$/u.test(javaClass.name);
-  const hasPrivateConstructor = new RegExp(`private\\s+${javaClass.name}\\s*\\(`).test(record.text);
-  const members = extractJavaStaticMethods(record, qualifiedName);
-  const evidence = [];
-
-  if (utilityPath) {
-    evidence.push('utility path segment');
-  }
-  if (utilityPackage) {
-    evidence.push('utility package segment');
-  }
-  if (utilityName) {
-    evidence.push('utility class name suffix');
-  }
-  if (hasPrivateConstructor) {
-    evidence.push('private constructor');
-  }
-  if (members.length >= 2) {
-    evidence.push(`${members.length} public static methods`);
-  }
-
-  if (!(members.length >= 2 && (utilityPath || utilityPackage || utilityName))) {
-    return null;
-  }
-
-  return {
-    candidate_id: `utility-artifact:java:${qualifiedName}`,
-    candidate_type: 'utility_artifact',
-    origin: 'project',
-    language: 'java',
-    framework: record.text.includes('org.springframework') ? 'spring' : null,
-    name: javaClass.name,
-    qualified_name: qualifiedName,
-    artifact_type: 'java_utility_class',
-    confidence: members.length >= 3 && (utilityName || utilityPackage) ? 'high' : 'medium',
-    action: 'review',
-    module_path: getModulePath(record.relativePath),
-    source_anchor: makeSourceAnchor(record.relativePath, javaClass.line, qualifiedName),
-    evidence,
-    members,
-    risks: ['Conservative structural scan; semantic business logic was not inferred.'],
-  };
-}
-
-function extractJavaUtilityCandidates(records) {
-  return records
-    .filter((record) => record.language === 'java')
-    .map((record) => extractJavaUtilityCandidate(record))
-    .filter(Boolean);
-}
-
-function extractJsExports(record) {
-  const exports = [];
-  const patterns = [
-    /export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/g,
-    /export\s+const\s+([A-Za-z_$][\w$]*)\s*=/g,
-    /export\s+let\s+([A-Za-z_$][\w$]*)\s*=/g,
-    /export\s+class\s+([A-Za-z_$][\w$]*)\b/g,
-    /exports\.([A-Za-z_$][\w$]*)\s*=/g,
-  ];
-
-  for (const pattern of patterns) {
-    let match;
-    while ((match = pattern.exec(record.text)) !== null) {
-      exports.push({
-        name: match[1],
-        member_type: 'export',
-        line: lineNumberForIndex(record.text, match.index),
-      });
-    }
-  }
-
-  const namedExportPattern = /export\s*\{([^}]+)\}/g;
-  let namedMatch;
-  while ((namedMatch = namedExportPattern.exec(record.text)) !== null) {
-    for (const rawName of namedMatch[1].split(',')) {
-      const name = rawName.trim().split(/\s+as\s+/i).at(-1)?.trim();
-      if (name && /^[A-Za-z_$][\w$]*$/.test(name)) {
-        exports.push({
-          name,
-          member_type: 'export',
-          line: lineNumberForIndex(record.text, namedMatch.index),
-        });
-      }
-    }
-  }
-
-  return uniqueByKey(exports, (item) => `${item.name}:${item.line}`);
-}
-
-function parseImportSpecifiers(importText) {
-  const specifiers = [];
-  const namedMatch = importText.match(/\{([^}]+)\}/);
-  if (namedMatch) {
-    for (const rawName of namedMatch[1].split(',')) {
-      const parts = rawName.trim().split(/\s+as\s+/i);
-      const localName = parts.at(-1)?.trim();
-      if (localName && /^[A-Za-z_$][\w$]*$/.test(localName)) {
-        specifiers.push(localName);
-      }
-    }
-  }
-
-  const namespaceMatch = importText.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
-  if (namespaceMatch) {
-    specifiers.push(namespaceMatch[1]);
-  }
-
-  const defaultMatch = importText.match(/^import\s+(?:type\s+)?([A-Za-z_$][\w$]*)\s*(?:,|\s+from)/);
-  if (defaultMatch) {
-    specifiers.push(defaultMatch[1]);
-  }
-
-  return [...new Set(specifiers)];
-}
-
-function extractModuleImports(record) {
-  const imports = [];
-  const importFromPattern = /import\s+(?:type\s+)?([\s\S]*?)\s+from\s+['"]([^'"]+)['"]/g;
-  const sideEffectPattern = /import\s+['"]([^'"]+)['"]/g;
-  const requirePattern = /(?:const|let|var)\s+([^=]+?)\s*=\s*require\(['"]([^'"]+)['"]\)/g;
-  let match;
-
-  while ((match = importFromPattern.exec(record.text)) !== null) {
-    imports.push({
-      module: match[2],
-      import_text: record.text.slice(match.index, importFromPattern.lastIndex).replace(/\s+/g, ' ').trim(),
-      line: lineNumberForIndex(record.text, match.index),
-      local_names: parseImportSpecifiers(`import ${match[1]} from '${match[2]}'`),
-    });
-  }
-  while ((match = sideEffectPattern.exec(record.text)) !== null) {
-    imports.push({
-      module: match[1],
-      import_text: match[0].replace(/\s+/g, ' ').trim(),
-      line: lineNumberForIndex(record.text, match.index),
-      local_names: [],
-    });
-  }
-  while ((match = requirePattern.exec(record.text)) !== null) {
-    const localNames = match[1]
-      .replace(/[{}]/g, '')
-      .split(',')
-      .map((name) => name.trim().split(':').at(-1)?.trim())
-      .filter((name) => name && /^[A-Za-z_$][\w$]*$/.test(name));
-    imports.push({
-      module: match[2],
-      import_text: match[0].replace(/\s+/g, ' ').trim(),
-      line: lineNumberForIndex(record.text, match.index),
-      local_names: [...new Set(localNames)],
-    });
-  }
-
-  return imports;
-}
-
-function buildRecordMap(records) {
-  return new Map(records.map((record) => [record.relativePath, record]));
-}
-
-function resolveRelativeModule(fromRelativePath, moduleName, recordMap) {
-  if (!moduleName.startsWith('.')) {
-    return null;
-  }
-
-  const basePath = normalizeRelativePath(path.posix.normalize(path.posix.join(path.posix.dirname(fromRelativePath), moduleName)));
-  const candidatePaths = [
-    basePath,
-    ...[...SUPPORTED_EXTENSIONS.keys()].map((extension) => `${basePath}${extension}`),
-    ...[...SUPPORTED_EXTENSIONS.keys()].map((extension) => `${basePath}/index${extension}`),
-  ];
-
-  return candidatePaths.find((candidatePath) => recordMap.has(candidatePath)) ?? null;
-}
-
-function buildImportUsage(records) {
-  const recordMap = buildRecordMap(records);
-  const usageByTarget = new Map();
-
-  for (const record of records.filter((item) => item.language !== 'java')) {
-    for (const moduleImport of extractModuleImports(record)) {
-      const targetPath = resolveRelativeModule(record.relativePath, moduleImport.module, recordMap);
-      if (!targetPath) {
-        continue;
-      }
-
-      if (!usageByTarget.has(targetPath)) {
-        usageByTarget.set(targetPath, []);
-      }
-      usageByTarget.get(targetPath).push({
-        source_path: record.relativePath,
-        source_anchor: makeSourceAnchor(record.relativePath, moduleImport.line, moduleImport.module),
-        import_text: moduleImport.import_text,
-      });
-    }
-  }
-
-  return usageByTarget;
-}
-
-function extractJsUtilityCandidate(record, usageByTarget) {
-  const relativePath = record.relativePath;
-  const segments = getPathSegments(relativePath).map((segment) => segment.toLowerCase());
-  const basename = path.posix.basename(relativePath, path.posix.extname(relativePath));
-  const exports = extractJsExports(record);
-  const importedBy = usageByTarget.get(relativePath) ?? [];
-  const utilityPath = segments.some((segment) => UTILITY_PATH_SEGMENTS.has(segment));
-  const composablePath = segments.includes('composables') || /^use[A-Z]/.test(basename);
-  const evidence = [];
-
-  if (utilityPath) {
-    evidence.push('common utility path segment');
-  }
-  if (composablePath) {
-    evidence.push('Vue composable path or use* naming');
-  }
-  if (exports.length > 0) {
-    evidence.push(`${exports.length} exported members`);
-  }
-  if (importedBy.length > 0) {
-    evidence.push(`${importedBy.length} cross-file imports`);
-  }
-
-  if (!(exports.length > 0 && (utilityPath || composablePath))) {
-    return null;
-  }
-
-  const members = exports.map((exported) => ({
-    member_key: `${relativePath}#${exported.name}`,
-    name: exported.name,
-    member_type: exported.member_type,
-    signature: exported.name,
-    source_anchor: makeSourceAnchor(relativePath, exported.line, exported.name),
-  }));
-  const artifactType = composablePath ? 'vue_composable_or_js_utility' : `${record.language}_utility_module`;
-
-  return {
-    candidate_id: `utility-artifact:${record.language}:${relativePath}`,
-    candidate_type: 'utility_artifact',
-    origin: 'project',
-    language: record.language,
-    framework: record.language === 'vue' || composablePath ? 'vue3' : null,
-    name: basename,
-    qualified_name: relativePath,
-    artifact_type: artifactType,
-    confidence: importedBy.length > 0 ? 'high' : 'medium',
-    action: 'review',
-    module_path: getModulePath(relativePath),
-    source_anchor: members[0]?.source_anchor ?? makeSourceAnchor(relativePath, 1, basename),
-    evidence,
-    members,
-    imported_by: importedBy.slice(0, 10),
-    risks: importedBy.length > 0 ? [] : ['No cross-file import observed in the scanned scope.'],
-  };
-}
-
-function extractJsUtilityCandidates(records) {
-  const usageByTarget = buildImportUsage(records);
-  return records
-    .filter((record) => record.language !== 'java')
-    .map((record) => extractJsUtilityCandidate(record, usageByTarget))
-    .filter(Boolean);
-}
-
-function getExternalPackageName(moduleName) {
-  if (moduleName.startsWith('@')) {
-    return moduleName.split('/').slice(0, 2).join('/');
-  }
-
-  return moduleName.split('/')[0];
-}
-
-function findCallText(record, localNames) {
-  for (const localName of localNames) {
-    const callPattern = new RegExp(`\\b${escapeRegExp(localName)}(?:\\.\\w+)?\\s*\\(`);
-    const lineIndex = record.lines.findIndex((line) => callPattern.test(line));
-    if (lineIndex >= 0) {
-      return {
-        text: record.lines[lineIndex].trim(),
-        line: lineIndex + 1,
-      };
-    }
-  }
-
-  return null;
-}
-
-function extractJsExternalUsages(records) {
-  const usages = [];
-
-  for (const record of records.filter((item) => item.language !== 'java')) {
-    for (const moduleImport of extractModuleImports(record)) {
-      if (moduleImport.module.startsWith('.')) {
-        continue;
-      }
-
-      const packageName = getExternalPackageName(moduleImport.module);
-      if (!JS_EXTERNAL_UTILITY_PACKAGES.has(packageName)) {
-        continue;
-      }
-
-      const call = findCallText(record, moduleImport.local_names);
-      usages.push({
-        candidate_id: `external-usage:${packageName}:${record.relativePath}:${moduleImport.line}`,
-        candidate_type: 'observed_external_usage',
-        origin: 'external',
-        origin_key: packageName,
-        language: record.language,
-        framework: packageName === '@vueuse/core' ? 'vue3' : null,
-        source_anchor: makeSourceAnchor(record.relativePath, moduleImport.line, packageName),
-        import_text: moduleImport.import_text,
-        call_text: call?.text ?? null,
-        call_anchor: call ? makeSourceAnchor(record.relativePath, call.line, packageName) : null,
-        evidence: ['observed external import in project source'],
-      });
-    }
-  }
-
-  return usages;
-}
-
-function extractJavaImports(record) {
-  const imports = [];
-  const pattern = /^\s*import\s+(static\s+)?([^;]+);/gm;
-  let match;
-
-  while ((match = pattern.exec(record.text)) !== null) {
-    imports.push({
-      static_import: Boolean(match[1]),
-      import_path: match[2].trim(),
-      import_text: match[0].trim(),
-      line: lineNumberForIndex(record.text, match.index),
-    });
-  }
-
-  return imports;
-}
-
-function findJavaCallText(record, javaImport) {
-  const importParts = javaImport.import_path.split('.');
-  const simpleName = importParts.at(-1);
-  const ownerName = javaImport.static_import ? importParts.at(-2) : simpleName;
-  const callPattern = javaImport.static_import
-    ? new RegExp(`\\b${escapeRegExp(simpleName)}\\s*\\(`)
-    : new RegExp(`\\b${escapeRegExp(ownerName)}\\.\\w+\\s*\\(`);
-  const lineIndex = record.lines.findIndex((line) => callPattern.test(line));
-
-  if (lineIndex < 0) {
-    return null;
-  }
-
-  return {
-    text: record.lines[lineIndex].trim(),
-    line: lineIndex + 1,
-  };
-}
-
-function extractJavaExternalUsages(records) {
-  const usages = [];
-
-  for (const record of records.filter((item) => item.language === 'java')) {
-    for (const javaImport of extractJavaImports(record)) {
-      if (JAVA_BUILT_IN_PREFIXES.some((prefix) => javaImport.import_path.startsWith(prefix))) {
-        continue;
-      }
-      if (!JAVA_EXTERNAL_UTILITY_PREFIXES.some((prefix) => javaImport.import_path.startsWith(prefix))) {
-        continue;
-      }
-
-      const call = findJavaCallText(record, javaImport);
-      usages.push({
-        candidate_id: `external-usage:${javaImport.import_path}:${record.relativePath}:${javaImport.line}`,
-        candidate_type: 'observed_external_usage',
-        origin: 'external',
-        origin_key: javaImport.import_path,
-        language: 'java',
-        framework: javaImport.import_path.startsWith('org.springframework') ? 'spring' : null,
-        source_anchor: makeSourceAnchor(record.relativePath, javaImport.line, javaImport.import_path),
-        import_text: javaImport.import_text,
-        call_text: call?.text ?? null,
-        call_anchor: call ? makeSourceAnchor(record.relativePath, call.line, javaImport.import_path) : null,
-        evidence: ['observed external import in project source'],
-      });
-    }
-  }
-
-  return usages;
-}
-
-function extractObservedExternalUsages(records) {
-  return uniqueByKey([
-    ...extractJavaExternalUsages(records),
-    ...extractJsExternalUsages(records),
-  ], (usage) => usage.candidate_id);
-}
-
-function addTemplateInstance(instancesByPattern, patternKey, instance) {
-  if (!instancesByPattern.has(patternKey)) {
-    instancesByPattern.set(patternKey, []);
-  }
-  instancesByPattern.get(patternKey).push(instance);
-}
-
-function collectTemplateInstances(records) {
-  const instancesByPattern = new Map();
-
-  for (const record of records) {
-    if (record.language === 'java') {
-      if (record.text.includes('@RestController') || record.text.includes('@Controller')) {
-        record.lines.forEach((line, index) => {
-          if (/@(?:Get|Post|Put|Delete|Patch)Mapping\b/.test(line)) {
-            addTemplateInstance(instancesByPattern, 'java-spring-mapping-method', {
-              source_anchor: makeSourceAnchor(record.relativePath, index + 1, 'spring-mapping-method'),
-              module_path: getModulePath(record.relativePath),
-              snippet: line.trim(),
-            });
-          }
-        });
-      }
-      if (/interface\s+\w+Mapper\s+extends\s+BaseMapper\s*</.test(record.text)) {
-        const line = record.lines.findIndex((item) => /interface\s+\w+Mapper\s+extends\s+BaseMapper\s*</.test(item)) + 1;
-        addTemplateInstance(instancesByPattern, 'java-mybatis-plus-base-mapper', {
-          source_anchor: makeSourceAnchor(record.relativePath, line, 'mybatis-plus-base-mapper'),
-          module_path: getModulePath(record.relativePath),
-          snippet: record.lines[line - 1]?.trim() ?? '',
-        });
-      }
-      continue;
-    }
-
-    if (/\/api\//.test(`/${record.relativePath}`) && /(axios|request|fetch)\s*(?:\.|\()/.test(record.text) && /export\s+(?:async\s+)?(?:function|const)\s+/.test(record.text)) {
-      const line = record.lines.findIndex((item) => /export\s+(?:async\s+)?(?:function|const)\s+/.test(item)) + 1;
-      addTemplateInstance(instancesByPattern, `${record.language}-api-client-request`, {
-        source_anchor: makeSourceAnchor(record.relativePath, line || 1, 'api-client-request'),
-        module_path: getModulePath(record.relativePath),
-        snippet: record.lines[(line || 1) - 1]?.trim() ?? '',
-      });
-    }
-    if (record.language === 'vue' && record.text.includes('<script setup') && record.text.includes('<el-table') && /\b(?:ref|reactive)\s*\(/.test(record.text)) {
-      const line = record.lines.findIndex((item) => item.includes('<el-table')) + 1;
-      addTemplateInstance(instancesByPattern, 'vue3-element-plus-table-page', {
-        source_anchor: makeSourceAnchor(record.relativePath, line || 1, 'element-plus-table-page'),
-        module_path: getModulePath(record.relativePath),
-        snippet: record.lines[(line || 1) - 1]?.trim() ?? '',
-      });
-    }
-  }
-
-  return instancesByPattern;
-}
-
-function templateMetadata(patternKey) {
-  const metadata = {
-    'java-spring-mapping-method': {
-      name: 'Spring mapped controller method',
-      language: 'java',
-      framework: 'spring',
-      summary: 'Repeated Spring controller mapping method structure.',
-    },
-    'java-mybatis-plus-base-mapper': {
-      name: 'MyBatis-Plus BaseMapper interface',
-      language: 'java',
-      framework: 'mybatis-plus',
-      summary: 'Repeated mapper interface extending BaseMapper.',
-    },
-    'typescript-api-client-request': {
-      name: 'TypeScript API client request function',
-      language: 'typescript',
-      framework: null,
-      summary: 'Repeated exported API client function wrapping request utilities.',
-    },
-    'javascript-api-client-request': {
-      name: 'JavaScript API client request function',
-      language: 'javascript',
-      framework: null,
-      summary: 'Repeated exported API client function wrapping request utilities.',
-    },
-    'vue3-element-plus-table-page': {
-      name: 'Vue 3 Element Plus table page',
-      language: 'vue',
-      framework: 'vue3',
-      summary: 'Repeated Vue 3 table page using Element Plus and Composition API state.',
-    },
-  };
-
-  return metadata[patternKey] ?? {
-    name: patternKey,
-    language: null,
-    framework: null,
-    summary: 'Repeated controlled structural pattern.',
-  };
-}
-
-function extractTemplateCandidates(records) {
-  const instancesByPattern = collectTemplateInstances(records);
-  const candidates = [];
-
-  for (const [patternKey, instances] of instancesByPattern.entries()) {
-    if (instances.length < TEMPLATE_MIN_INSTANCES) {
-      continue;
-    }
-
-    const metadata = templateMetadata(patternKey);
-    candidates.push({
-      candidate_id: `template-pattern:${patternKey}`,
-      candidate_type: 'template_pattern',
-      pattern_key: patternKey,
-      name: metadata.name,
-      language: metadata.language,
-      framework: metadata.framework,
-      action: 'review',
-      confidence: 'medium',
-      instance_count: instances.length,
-      threshold: TEMPLATE_MIN_INSTANCES,
-      summary: metadata.summary,
-      evidence: ['controlled structural fingerprint', `observed ${instances.length} instances`],
-      instances: instances.slice(0, 10),
-    });
-  }
-
-  return candidates;
-}
-
-function addFindingDedupeKey(keys, kind, value) {
-  const normalized = normalizeNullableString(value);
-  if (!normalized) {
-    return;
-  }
-
-  keys.push({
-    kind,
-    value: normalized,
-  });
-}
-
-function findingSymbol(finding) {
-  if (finding.finding_type === 'utility_artifact') {
-    return finding.qualified_name ?? finding.name ?? null;
-  }
-  if (finding.finding_type === 'template_pattern') {
-    return finding.pattern_key ?? finding.name ?? null;
-  }
-  if (finding.finding_type === 'observed_external_usage') {
-    return finding.origin_key ?? null;
-  }
-
-  return finding.name ?? null;
-}
-
-function primaryFindingAnchor(finding) {
-  if (finding.source_anchor) {
-    return finding.source_anchor;
-  }
-  if (Array.isArray(finding.instances) && finding.instances[0]?.source_anchor) {
-    return finding.instances[0].source_anchor;
-  }
-  if (finding.call_anchor) {
-    return finding.call_anchor;
-  }
-
-  return null;
-}
-
-function buildFindingDedupeKeys(finding) {
-  const keys = [];
-  const primaryAnchor = primaryFindingAnchor(finding);
-
-  if (finding.finding_type === 'utility_artifact') {
-    addFindingDedupeKey(keys, 'anchor', sourceAnchorText(primaryAnchor));
-    addFindingDedupeKey(keys, 'symbol', findingSymbol(finding));
-    const signatureBundle = (finding.members ?? [])
-      .map((member) => `${member.member_key}|${member.signature}|${sourceAnchorText(member.source_anchor)}`)
-      .sort()
-      .join('||');
-    addFindingDedupeKey(keys, 'signature', signatureBundle);
-  } else if (finding.finding_type === 'observed_external_usage') {
-    addFindingDedupeKey(keys, 'anchor', sourceAnchorText(primaryAnchor));
-    addFindingDedupeKey(keys, 'import', `${sourceAnchorText(finding.source_anchor)}|${finding.import_text ?? ''}`);
-    if (finding.call_anchor || finding.call_text) {
-      addFindingDedupeKey(keys, 'call', `${sourceAnchorText(finding.call_anchor)}|${finding.call_text ?? ''}`);
-    }
-  } else if (finding.finding_type === 'template_pattern') {
-    const instanceAnchors = (finding.instances ?? [])
-      .map((instance) => sourceAnchorText(instance.source_anchor))
-      .sort()
-      .join('||');
-    addFindingDedupeKey(keys, 'instance-anchor-set', instanceAnchors);
-    addFindingDedupeKey(keys, 'anchor', sourceAnchorText(primaryAnchor));
-  }
-
-  return uniqueByKey(keys, (key) => `${key.kind}:${key.value}`);
-}
-
-function buildFindingFingerprint(finding, dedupeKeys) {
-  const material = {
-    finding_type: finding.finding_type,
-    origin_key: finding.origin_key ?? null,
-    language: finding.language ?? null,
-    framework: finding.framework ?? null,
-    name: finding.name ?? null,
-    artifact_type: finding.artifact_type ?? null,
-    module_path: finding.module_path ?? null,
-    source_anchor: sourceAnchorText(finding.source_anchor),
-    call_anchor: sourceAnchorText(finding.call_anchor),
-    import_text: finding.import_text ?? null,
-    call_text: finding.call_text ?? null,
-    member_signatures: (finding.members ?? [])
-      .map((member) => `${member.member_key}|${member.signature}|${sourceAnchorText(member.source_anchor)}`)
-      .sort(),
-    imported_by: (finding.imported_by ?? [])
-      .map((item) => `${item.source_path}|${sourceAnchorText(item.source_anchor)}|${item.import_text ?? ''}`)
-      .sort(),
-    instance_anchors: (finding.instances ?? [])
-      .map((instance) => `${sourceAnchorText(instance.source_anchor)}|${instance.module_path ?? ''}`)
-      .sort(),
-    dedupe_keys: dedupeKeys.map((key) => `${key.kind}:${key.value}`),
-  };
-
-  return sha256(JSON.stringify(material));
-}
-
-function candidateToFinding(candidate) {
-  const finding = {
-    finding_id: candidate.candidate_id,
-    finding_type: candidate.candidate_type,
-    origin: candidate.origin ?? null,
-    language: candidate.language ?? null,
-    framework: candidate.framework ?? null,
-    name: candidate.name ?? null,
-    qualified_name: candidate.qualified_name ?? null,
-    artifact_type: candidate.artifact_type ?? null,
-    module_path: candidate.module_path ?? null,
-    origin_key: candidate.origin_key ?? null,
-    pattern_key: candidate.pattern_key ?? null,
-    source_anchor: candidate.source_anchor ?? null,
-    call_anchor: candidate.call_anchor ?? null,
-    import_text: candidate.import_text ?? null,
-    call_text: candidate.call_text ?? null,
-    structural_evidence: candidate.evidence ?? [],
-  };
-
-  if (Array.isArray(candidate.members) && candidate.members.length > 0) {
-    finding.members = candidate.members.map((member) => ({
-      member_key: member.member_key,
-      name: member.name,
-      member_type: member.member_type,
-      signature: member.signature,
-      source_anchor: member.source_anchor,
-    }));
-  }
-  if (Array.isArray(candidate.imported_by) && candidate.imported_by.length > 0) {
-    finding.imported_by = candidate.imported_by.map((item) => ({
-      source_path: item.source_path,
-      source_anchor: item.source_anchor,
-      import_text: item.import_text,
-    }));
-  }
-  if (Array.isArray(candidate.instances) && candidate.instances.length > 0) {
-    finding.instances = candidate.instances.map((instance) => ({
-      source_anchor: instance.source_anchor,
-      module_path: instance.module_path ?? null,
-      snippet: instance.snippet ?? null,
-    }));
-  }
-  if (Number.isInteger(candidate.instance_count)) {
-    finding.instance_count = candidate.instance_count;
-  }
-  if (Number.isInteger(candidate.threshold)) {
-    finding.threshold = candidate.threshold;
-  }
-
-  const dedupeKeys = buildFindingDedupeKeys(finding);
-  const fingerprint = buildFindingFingerprint(finding, dedupeKeys);
-
-  finding.discovery_fingerprint = fingerprint;
-  finding.fingerprint_algorithm = 'sha256';
-  finding.mechanical_dedupe = {
-    keys: [
-      ...dedupeKeys,
-      {
-        kind: 'fingerprint',
-        value: fingerprint,
-      },
-    ],
-  };
-
-  return finding;
-}
-
-function groupFindingsByType(findings) {
-  const grouped = {
-    utility_artifacts: [],
-    observed_external_usages: [],
-    template_patterns: [],
-  };
-
-  for (const finding of findings) {
-    if (finding.finding_type === 'utility_artifact') {
-      grouped.utility_artifacts.push(finding);
-    } else if (finding.finding_type === 'observed_external_usage') {
-      grouped.observed_external_usages.push(finding);
-    } else if (finding.finding_type === 'template_pattern') {
-      grouped.template_patterns.push(finding);
-    }
-  }
-
-  return grouped;
-}
-
-function allDiscoveryFindings(groupedFindings) {
-  return [
-    ...groupedFindings.utility_artifacts,
-    ...groupedFindings.observed_external_usages,
-    ...groupedFindings.template_patterns,
-  ];
-}
-
-function buildFindingCounts(groupedFindings) {
-  const counts = {
-    utility_artifacts: groupedFindings.utility_artifacts.length,
-    observed_external_usages: groupedFindings.observed_external_usages.length,
-    template_patterns: groupedFindings.template_patterns.length,
-  };
-
-  return {
-    ...counts,
-    total: counts.utility_artifacts + counts.observed_external_usages + counts.template_patterns,
-  };
-}
-
-function mechanicallyDedupeFindings(groupedFindings) {
-  const deduped = {
-    utility_artifacts: [],
-    observed_external_usages: [],
-    template_patterns: [],
-  };
-  const seenKeys = new Map();
-  const duplicateGroups = [];
-
-  for (const groupName of ['utility_artifacts', 'observed_external_usages', 'template_patterns']) {
-    for (const finding of groupedFindings[groupName]) {
-      let duplicate = null;
-      for (const key of finding.mechanical_dedupe.keys) {
-        const identity = `${finding.finding_type}:${key.kind}:${key.value}`;
-        const existing = seenKeys.get(identity);
-        if (existing) {
-          duplicate = {
-            dedupe_key: key,
-            kept_finding_id: existing.finding_id,
-            removed_finding_id: finding.finding_id,
-          };
-          break;
-        }
-      }
-
-      if (duplicate) {
-        duplicateGroups.push({
-          finding_type: finding.finding_type,
-          dedupe_kind: duplicate.dedupe_key.kind,
-          dedupe_value: duplicate.dedupe_key.value,
-          kept_finding_id: duplicate.kept_finding_id,
-          removed_finding_id: duplicate.removed_finding_id,
-        });
-        continue;
-      }
-
-      deduped[groupName].push(finding);
-      for (const key of finding.mechanical_dedupe.keys) {
-        seenKeys.set(`${finding.finding_type}:${key.kind}:${key.value}`, finding);
-      }
-    }
-  }
-
-  const inputTotal = allDiscoveryFindings(groupedFindings).length;
-  const keptCounts = buildFindingCounts(deduped);
-  return {
-    findings: deduped,
-    duplicate_groups: duplicateGroups,
-    summary: {
-      input_total: inputTotal,
-      kept_total: keptCounts.total,
-      removed_total: inputTotal - keptCounts.total,
-      duplicate_groups: duplicateGroups.length,
-      rules: ['anchor', 'symbol', 'signature', 'import', 'call', 'fingerprint'],
-    },
-  };
-}
-
-function buildFindingIndexItem(finding) {
-  const primaryAnchor = primaryFindingAnchor(finding);
-  const symbol = findingSymbol(finding);
-  return {
-    finding_id: finding.finding_id,
-    finding_type: finding.finding_type,
-    language: finding.language ?? null,
-    framework: finding.framework ?? null,
-    symbol,
-    path: primaryAnchor?.path ?? null,
-    anchor: sourceAnchorText(primaryAnchor),
-    discovery_fingerprint: finding.discovery_fingerprint,
-    dedupe_keys: finding.mechanical_dedupe.keys.map((key) => `${key.kind}:${key.value}`),
-  };
-}
-
-function uniqueSortedStrings(values) {
-  return [...new Set(values.filter(Boolean).map((value) => String(value)))].sort();
-}
-
-function findingSourcePaths(finding) {
-  return uniqueSortedStrings([
-    finding.source_anchor?.path,
-    finding.call_anchor?.path,
-    ...(finding.members ?? []).map((member) => member.source_anchor?.path),
-    ...(finding.imported_by ?? []).map((item) => item.source_anchor?.path),
-    ...(finding.instances ?? []).map((instance) => instance.source_anchor?.path),
-  ]);
-}
-
-function findingMatchKeys(finding) {
-  const keys = [];
-  const primaryAnchor = primaryFindingAnchor(finding);
-  if (primaryAnchor?.text) {
-    keys.push(`${finding.finding_type}|anchor|${primaryAnchor.text}`);
-  }
-  if (finding.finding_type === 'template_pattern' && finding.pattern_key) {
-    keys.push(`${finding.finding_type}|pattern|${finding.pattern_key}`);
-  }
-  if (finding.call_anchor?.text) {
-    keys.push(`${finding.finding_type}|call-anchor|${finding.call_anchor.text}`);
-  }
-  return uniqueSortedStrings(keys);
-}
-
-function utilityArtifactToFindingRecord(artifact) {
-  return {
-    finding_type: 'utility_artifact',
-    origin_key: artifact.origin.originKey,
-    language: artifact.language,
-    framework: artifact.framework,
-    name: artifact.name,
-    artifact_type: artifact.artifactType,
-    module_path: artifact.modulePath,
-    source_anchor: artifact.sourceAnchor,
-    members: artifact.members.flatMap((member) => member.signatures.map((signature) => ({
-      member_key: member.memberKey,
-      signature: signature.signature,
-      source_anchor: signature.sourceAnchor,
-    }))),
-  };
-}
-
-function templatePatternToFindingRecord(pattern) {
-  return {
-    finding_type: 'template_pattern',
-    language: pattern.language,
-    framework: pattern.framework,
-    name: pattern.name,
-    module_path: pattern.modulePath,
-    pattern_key: pattern.patternKey,
-    instances: pattern.instances.map((instance) => ({
-      source_anchor: instance.sourceAnchor,
-      module_path: instance.modulePath,
-    })),
-  };
-}
-
-function externalUsageToFindingRecord(usage) {
-  return {
-    finding_type: 'observed_external_usage',
-    origin_key: usage.origin.originKey,
-    language: usage.language,
-    framework: usage.framework,
-    source_anchor: usage.sourceAnchor,
-    import_text: usage.importText,
-    call_text: usage.callText,
-  };
-}
-
-function traceDecisionToFindingRecord(candidate) {
-  return {
-    finding_type: candidate.candidateType,
-    source_anchor: candidate.sourceAnchor,
-    pattern_key: candidate.patternKey ?? null,
-  };
-}
-
-function fingerprintForFindingRecord(finding) {
-  const dedupeKeys = buildFindingDedupeKeys(finding);
-  return buildFindingFingerprint(finding, dedupeKeys);
-}
-
-function persistedDiscoveryRecord(recordFamily, recordKind, recordKey, finding, discoveryFingerprint = null) {
-  return {
-    recordFamily,
-    recordKind,
-    recordKey,
-    sourceAnchor: primaryFindingAnchor(finding),
-    sourcePaths: findingSourcePaths(finding),
-    matchKeys: findingMatchKeys(finding),
-    fingerprintAlgorithm: 'sha256',
-    structuralFingerprint: discoveryFingerprint ?? fingerprintForFindingRecord(finding),
-  };
-}
-
-function persistedDiscoveryRecordSummary(record) {
-  return {
-    record_family: record.recordFamily,
-    record_kind: record.recordKind,
-    record_key: record.recordKey,
-    source_anchor: anchorToOutput(record.sourceAnchor),
-  };
-}
-
-function emptyPreclassificationFindingCounts(totalFindings) {
-  return {
-    new: 0,
-    unchanged_catalog_entries: 0,
-    unchanged_suppressions: 0,
-    unchanged_deferrals: 0,
-    reopened_catalog_entries: 0,
-    reopened_suppressions: 0,
-    reopened_deferrals: 0,
-    review_queue: 0,
-    skipped: 0,
-    total: totalFindings,
-  };
-}
-
-function emptyPreclassificationCleanupCounts() {
-  return {
-    stale_catalog_entries: 0,
-    stale_suppressions: 0,
-    stale_deferrals: 0,
-    missing_source_records: 0,
-    total: 0,
-  };
-}
-
-function buildReviewQueueItem(finding, reason, matchedRecord = null) {
-  return {
-    finding_id: finding.finding_id,
-    finding_type: finding.finding_type,
-    reason,
-    matched_record: matchedRecord ? persistedDiscoveryRecordSummary(matchedRecord) : null,
-  };
-}
-
-function buildSkippedFindingItem(finding, reason, matchedRecord) {
-  return {
-    finding_id: finding.finding_id,
-    finding_type: finding.finding_type,
-    reason,
-    matched_record: persistedDiscoveryRecordSummary(matchedRecord),
-  };
-}
-
-function buildCleanupQueueItem(record, reason, verification = null) {
-  return {
-    record_family: record.recordFamily,
-    record_kind: record.recordKind,
-    record_key: record.recordKey,
-    reason,
-    source_anchor: anchorToOutput(record.sourceAnchor),
-    verification,
-  };
-}
-
-function parseJsonArrayField(value) {
-  const text = normalizeNullableString(value);
-  if (!text) {
-    return [];
-  }
-  try {
-    const parsed = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function isPathCoveredByChangedPaths(relativePath, changedPaths) {
-  return changedPaths.some((scope) => {
-    if (scope.is_directory) {
-      return relativePath === scope.path || relativePath.startsWith(`${scope.path}/`);
-    }
-    return relativePath === scope.path;
-  });
-}
-
-function recordInPreclassificationScope(record, scan) {
-  if (scan.mode !== 'changed') {
-    return true;
-  }
-  return record.sourcePaths.some((sourcePath) => isPathCoveredByChangedPaths(sourcePath, scan.changed_paths));
-}
-
-function preclassificationIndexState(context) {
-  const exists = fs.existsSync(context.dbPath);
-  const schemaVersion = exists ? getReadOnlySchemaVersion(context.dbPath) : 0;
-  return {
-    exists,
-    schemaVersion,
-    readable: exists && schemaVersion >= MIN_PRECLASS_SCHEMA_VERSION,
-    reason: exists ? (schemaVersion >= MIN_PRECLASS_SCHEMA_VERSION ? null : 'schema-too-old') : 'missing-index',
-  };
-}
-
-function loadPersistedDiscoveryRecords(context, scan) {
-  const state = preclassificationIndexState(context);
-  if (!state.readable) {
-    return {
-      state,
-      records: [],
-    };
-  }
-
-  const rows = runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  record_family,
-  record_kind,
-  record_key,
-  source_anchor,
-  source_paths,
-  match_keys,
-  structural_fingerprint,
-  fingerprint_algorithm
-FROM discovery_fingerprints
-WHERE project_id = ${sqlString(context.projectId)}
-ORDER BY record_family, record_kind, record_key;
-`);
-
-  const records = rows.map((row) => ({
-    recordFamily: row.record_family,
-    recordKind: row.record_kind,
-    recordKey: row.record_key,
-    sourceAnchor: parseStoredSourceAnchor(row.source_anchor),
-    sourcePaths: uniqueSortedStrings(parseJsonArrayField(row.source_paths)),
-    matchKeys: uniqueSortedStrings(parseJsonArrayField(row.match_keys)),
-    structuralFingerprint: row.structural_fingerprint,
-    fingerprintAlgorithm: row.fingerprint_algorithm ?? 'sha256',
-  })).filter((record) => recordInPreclassificationScope(record, scan));
-
-  return {
-    state,
-    records,
-  };
-}
-
-function recordPriority(record) {
-  if (record.recordFamily === 'catalog_entry') {
-    return 3;
-  }
-  if (record.recordFamily === 'suppression') {
-    return 2;
-  }
-  if (record.recordFamily === 'deferral') {
-    return 1;
-  }
-  return 0;
-}
-
-function chooseBestMatchedRecord(records) {
-  return [...records].sort((left, right) => {
-    if (recordPriority(right) !== recordPriority(left)) {
-      return recordPriority(right) - recordPriority(left);
-    }
-    if (left.recordKind !== right.recordKind) {
-      return left.recordKind.localeCompare(right.recordKind);
-    }
-    return left.recordKey.localeCompare(right.recordKey);
-  })[0] ?? null;
-}
-
-function preclassificationReasonForUnchanged(record) {
-  if (record.recordFamily === 'catalog_entry') {
-    return 'unchanged-catalog-entry';
-  }
-  if (record.recordFamily === 'suppression') {
-    return 'unchanged-suppression';
-  }
-  return 'unchanged-deferral';
-}
-
-function preclassificationReasonForReopened(record) {
-  if (record.recordFamily === 'catalog_entry') {
-    return 'changed-catalog-entry';
-  }
-  if (record.recordFamily === 'suppression') {
-    return 'stale-suppression';
-  }
-  return 'stale-deferral';
-}
-
-function incrementPreclassificationFindingCount(counts, reason) {
-  if (reason === 'new-finding') {
-    counts.new += 1;
-  } else if (reason === 'unchanged-catalog-entry') {
-    counts.unchanged_catalog_entries += 1;
-    counts.skipped += 1;
-  } else if (reason === 'unchanged-suppression') {
-    counts.unchanged_suppressions += 1;
-    counts.skipped += 1;
-  } else if (reason === 'unchanged-deferral') {
-    counts.unchanged_deferrals += 1;
-    counts.skipped += 1;
-  } else if (reason === 'changed-catalog-entry') {
-    counts.reopened_catalog_entries += 1;
-  } else if (reason === 'stale-suppression') {
-    counts.reopened_suppressions += 1;
-  } else if (reason === 'stale-deferral') {
-    counts.reopened_deferrals += 1;
-  }
-  if (reason === 'new-finding' || reason === 'changed-catalog-entry' || reason === 'stale-suppression' || reason === 'stale-deferral') {
-    counts.review_queue += 1;
-  }
-}
-
-function incrementPreclassificationCleanupCount(counts, reason) {
-  if (reason === 'stale-catalog-entry') {
-    counts.stale_catalog_entries += 1;
-  } else if (reason === 'stale-suppression') {
-    counts.stale_suppressions += 1;
-  } else if (reason === 'stale-deferral') {
-    counts.stale_deferrals += 1;
-  } else if (reason === 'missing-source') {
-    counts.missing_source_records += 1;
-  }
-  counts.total += 1;
-}
-
-function preclassificationCleanupReason(record, verification) {
-  if (!verification.ok) {
-    return 'missing-source';
-  }
-  if (record.recordFamily === 'catalog_entry') {
-    return 'stale-catalog-entry';
-  }
-  if (record.recordFamily === 'suppression') {
-    return 'stale-suppression';
-  }
-  return 'stale-deferral';
-}
-
-function buildDiscoveryPreclassification(context, scan, groupedFindings) {
-  const findings = allDiscoveryFindings(groupedFindings);
-  const findingCounts = emptyPreclassificationFindingCounts(findings.length);
-  const cleanupCounts = emptyPreclassificationCleanupCounts();
-  const loaded = loadPersistedDiscoveryRecords(context, scan);
-  const recordsByMatchKey = new Map();
-
-  for (const record of loaded.records) {
-    for (const matchKey of record.matchKeys) {
-      const existing = recordsByMatchKey.get(matchKey) ?? [];
-      existing.push(record);
-      recordsByMatchKey.set(matchKey, existing);
-    }
-  }
-
-  const matchedRecordKeys = new Set();
-  const reviewQueue = [];
-  const skipped = [];
-
-  for (const finding of findings) {
-    const candidateRecords = [];
-    const seenRecords = new Set();
-    for (const matchKey of findingMatchKeys(finding)) {
-      for (const record of recordsByMatchKey.get(matchKey) ?? []) {
-        const recordIdentity = `${record.recordFamily}:${record.recordKind}:${record.recordKey}`;
-        if (!seenRecords.has(recordIdentity)) {
-          seenRecords.add(recordIdentity);
-          candidateRecords.push(record);
-        }
-      }
-    }
-
-    const unchangedRecord = candidateRecords.find((record) => record.structuralFingerprint === finding.discovery_fingerprint) ?? null;
-    if (unchangedRecord) {
-      const reason = preclassificationReasonForUnchanged(unchangedRecord);
-      incrementPreclassificationFindingCount(findingCounts, reason);
-      skipped.push(buildSkippedFindingItem(finding, reason, unchangedRecord));
-      matchedRecordKeys.add(`${unchangedRecord.recordFamily}:${unchangedRecord.recordKind}:${unchangedRecord.recordKey}`);
-      continue;
-    }
-
-    const reopenedRecord = chooseBestMatchedRecord(candidateRecords);
-    if (reopenedRecord) {
-      const reason = preclassificationReasonForReopened(reopenedRecord);
-      incrementPreclassificationFindingCount(findingCounts, reason);
-      reviewQueue.push(buildReviewQueueItem(finding, reason, reopenedRecord));
-      matchedRecordKeys.add(`${reopenedRecord.recordFamily}:${reopenedRecord.recordKind}:${reopenedRecord.recordKey}`);
-      continue;
-    }
-
-    incrementPreclassificationFindingCount(findingCounts, 'new-finding');
-    reviewQueue.push(buildReviewQueueItem(finding, 'new-finding'));
-  }
-
-  const cleanupQueue = [];
-  for (const record of loaded.records) {
-    const recordIdentity = `${record.recordFamily}:${record.recordKind}:${record.recordKey}`;
-    if (matchedRecordKeys.has(recordIdentity)) {
-      continue;
-    }
-    const verification = verifySourceAnchor(context.rootPath, anchorToOutput(record.sourceAnchor));
-    const reason = preclassificationCleanupReason(record, verification);
-    incrementPreclassificationCleanupCount(cleanupCounts, reason);
-    cleanupQueue.push(buildCleanupQueueItem(record, reason, verification));
-  }
-
-  const recordCounts = {
-    catalog_entries: loaded.records.filter((record) => record.recordFamily === 'catalog_entry').length,
-    suppressions: loaded.records.filter((record) => record.recordFamily === 'suppression').length,
-    deferrals: loaded.records.filter((record) => record.recordFamily === 'deferral').length,
-  };
-
-  return {
-    status: loaded.state.readable ? 'ready' : loaded.state.reason,
-    index: {
-      status: loaded.state.readable ? 'ready' : loaded.state.reason,
-      schema_version: loaded.state.schemaVersion,
-      readable: loaded.state.readable,
-    },
-    record_counts: {
-      ...recordCounts,
-      total: recordCounts.catalog_entries + recordCounts.suppressions + recordCounts.deferrals,
-    },
-    finding_counts: findingCounts,
-    cleanup_counts: cleanupCounts,
-    review_queue: reviewQueue,
-    skipped,
-    cleanup_queue: cleanupQueue,
-  };
-}
-
-function buildDiscoveryDryRun(context, discoverOptions) {
-  const scope = buildScanScope(context.rootPath, discoverOptions);
-  const records = readScanFiles(scope.files);
-  const utilityArtifacts = [
-    ...extractJavaUtilityCandidates(records),
-    ...extractJsUtilityCandidates(records),
-  ].sort((left, right) => left.source_anchor.text.localeCompare(right.source_anchor.text));
-  const observedExternalUsages = extractObservedExternalUsages(records)
-    .sort((left, right) => left.source_anchor.text.localeCompare(right.source_anchor.text));
-  const templatePatterns = extractTemplateCandidates(records)
-    .sort((left, right) => left.pattern_key.localeCompare(right.pattern_key));
-
-  const generatedAt = new Date().toISOString();
-  const project = projectContextToOutput(context);
-  const scan = {
-    mode: discoverOptions.mode,
-    root_path: context.rootPath,
-    scan_source: scope.source,
-    changed_paths: scope.changedScopes.map((scopeItem) => ({
-      input: scopeItem.input,
-      path: scopeItem.relativePath,
-      exists: scopeItem.exists,
-      is_directory: scopeItem.isDirectory,
-    })),
-    language_filters: discoverOptions.languages,
-    include_filters: discoverOptions.includeFilters,
-    exclude_filters: discoverOptions.excludeFilters,
-    files_considered: scope.filesConsidered,
-    files_in_scope: scope.scopedFiles,
-    files_scanned: records.length,
-    skipped_by_reason: scope.skippedByReason,
-    max_scan_file_bytes: MAX_SCAN_FILE_BYTES,
-  };
-  const candidates = {
-    utility_artifacts: utilityArtifacts,
-    observed_external_usages: observedExternalUsages,
-    template_patterns: templatePatterns,
-  };
-  const deduped = mechanicallyDedupeFindings(groupFindingsByType(allDiscoveryCandidates({
-    candidates,
-  }).map((candidate) => candidateToFinding(candidate))));
-  const findingCounts = buildFindingCounts(deduped.findings);
-  const preclassification = buildDiscoveryPreclassification(context, scan, deduped.findings);
-
-  return {
-    summary: {
-      kind: 'tool_catalog_discovery_dry_run',
-      version: 2,
-      generated_at: generatedAt,
-      dry_run: true,
-      index_mutated: false,
-      project,
-      scan,
-      finding_counts: findingCounts,
-      mechanical_dedupe: deduped.summary,
-      preclassification,
-    },
-    findings_payload: {
-      kind: 'tool_catalog_discovery_findings',
-      version: 1,
-      generated_at: generatedAt,
-      dry_run: true,
-      index_mutated: false,
-      project,
-      scan,
-      finding_counts: findingCounts,
-      mechanical_dedupe: {
-        ...deduped.summary,
-        duplicate_groups: deduped.duplicate_groups,
-      },
-      preclassification,
-      findings: deduped.findings,
-    },
-    finding_index_payload: {
-      kind: 'tool_catalog_discovery_finding_index',
-      version: 1,
-      generated_at: generatedAt,
-      dry_run: true,
-      index_mutated: false,
-      project: {
-        project_id: project.project_id,
-        root_path: project.root_path,
-      },
-      scan: {
-        mode: scan.mode,
-        files_scanned: scan.files_scanned,
-      },
-      finding_counts: findingCounts,
-      items: allDiscoveryFindings(deduped.findings).map((finding) => buildFindingIndexItem(finding)),
-    },
-  };
-}
-
-function pluralize(count, singular, plural = `${singular}s`) {
-  return count === 1 ? singular : plural;
-}
-
-function allDiscoveryCandidates(output) {
-  return [
-    ...output.candidates.utility_artifacts,
-    ...output.candidates.observed_external_usages,
-    ...output.candidates.template_patterns,
-  ];
-}
-
-function buildDiscoveryRunId(summary, findingsPayload) {
-  const generatedAt = summary.generated_at.replace(/[-:.TZ]/g, '').slice(0, 17);
-  const findingKeys = allDiscoveryFindings(findingsPayload.findings).map((finding) => finding.finding_id).sort().join('\n');
-  return `${generatedAt}-${summary.scan.mode}-${sha256(`${summary.project.project_id}\n${findingKeys}`).slice(0, 12)}`;
-}
-
-function discoveryRunFilePaths(context, summary, findingsPayload) {
-  const runId = buildDiscoveryRunId(summary, findingsPayload);
-  const runDirectory = path.join(context.projectDir, 'runs', runId);
-  return {
-    run_id: runId,
-    run_directory: runDirectory,
-    findings_path: path.join(runDirectory, 'findings.json'),
-    finding_index_path: path.join(runDirectory, 'finding-index.json'),
-    finding_manifest_path: path.join(runDirectory, 'finding-manifest.json'),
-  };
-}
-
-function writeJsonRunFile(filePath, value) {
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-}
-
-function sourceAnchorText(anchor) {
-  return anchor?.text ?? 'n/a';
-}
-
-function buildFindingManifest(summary, runFiles) {
-  return {
-    kind: 'tool_catalog_discovery_finding_manifest',
-    version: 1,
-    generated_at: summary.generated_at,
-    dry_run: true,
-    index_mutated: false,
-    project: {
-      project_id: summary.project.project_id,
-      root_path: summary.project.root_path,
-      catalog_path: summary.project.catalog_path,
-    },
-    scan: {
-      mode: summary.scan.mode,
-      scan_source: summary.scan.scan_source,
-      files_scanned: summary.scan.files_scanned,
-      files_in_scope: summary.scan.files_in_scope,
-      changed_paths: summary.scan.changed_paths,
-    },
-    finding_counts: summary.finding_counts,
-    mechanical_dedupe: summary.mechanical_dedupe,
-    preclassification: summary.preclassification,
-    run_files: runFiles,
-  };
-}
-
-function writeDiscoveryRunFiles(context, draft) {
-  const runFiles = discoveryRunFilePaths(context, draft.summary, draft.findings_payload);
-  const output = {
-    ...draft.summary,
-    run_files: runFiles,
-  };
-  const manifest = buildFindingManifest(output, runFiles);
-
-  fs.mkdirSync(runFiles.run_directory, { recursive: true });
-  writeJsonRunFile(runFiles.findings_path, {
-    ...draft.findings_payload,
-    run_files: runFiles,
-  });
-  writeJsonRunFile(runFiles.finding_index_path, {
-    ...draft.finding_index_payload,
-    run_files: runFiles,
-  });
-  writeJsonRunFile(runFiles.finding_manifest_path, manifest);
-
-  return output;
-}
-
-function renderDiscoveryMarkdown(output) {
-  const lines = [
-    '# Tool Catalog Discovery Dry Run',
-    '',
-    `Project: \`${output.project.project_id}\``,
-    `Root: \`${output.project.root_path}\``,
-    `Mode: \`${output.scan.mode}\``,
-    `Files: ${output.scan.files_scanned} scanned from ${output.scan.files_in_scope} in-scope ${pluralize(output.scan.files_in_scope, 'file')}.`,
-    `Index mutated: \`${output.index_mutated}\``,
-    '',
-    '## Finding Counts',
-    '',
-    `- Utility artifacts: ${output.finding_counts.utility_artifacts}`,
-    `- Observed external usages: ${output.finding_counts.observed_external_usages}`,
-    `- Template patterns: ${output.finding_counts.template_patterns}`,
-    `- Total findings: ${output.finding_counts.total}`,
-    '',
-    '## Mechanical Dedupe',
-    '',
-    `- Input findings: ${output.mechanical_dedupe.input_total}`,
-    `- Kept findings: ${output.mechanical_dedupe.kept_total}`,
-    `- Removed duplicates: ${output.mechanical_dedupe.removed_total}`,
-    `- Duplicate groups: ${output.mechanical_dedupe.duplicate_groups}`,
-    '',
-    '## Preclassification',
-    '',
-    `- Index state: \`${output.preclassification.index.status}\``,
-    `- Review queue: ${output.preclassification.finding_counts.review_queue}`,
-    `- New findings: ${output.preclassification.finding_counts.new}`,
-    `- Unchanged catalog entries: ${output.preclassification.finding_counts.unchanged_catalog_entries}`,
-    `- Unchanged suppressions: ${output.preclassification.finding_counts.unchanged_suppressions}`,
-    `- Unchanged deferrals: ${output.preclassification.finding_counts.unchanged_deferrals}`,
-    `- Reopened catalog entries: ${output.preclassification.finding_counts.reopened_catalog_entries}`,
-    `- Reopened suppressions: ${output.preclassification.finding_counts.reopened_suppressions}`,
-    `- Reopened deferrals: ${output.preclassification.finding_counts.reopened_deferrals}`,
-    `- Cleanup records: ${output.preclassification.cleanup_counts.total}`,
-    `- Missing-source records: ${output.preclassification.cleanup_counts.missing_source_records}`,
-    '',
-    '## Run Files',
-    '',
-    `- Raw Findings: \`${output.run_files.findings_path}\``,
-    `- Finding Index: \`${output.run_files.finding_index_path}\``,
-    `- Finding Manifest: \`${output.run_files.finding_manifest_path}\``,
-    '',
-    '## Next Steps',
-    '',
-    '- Read the Finding Index first to shard review work without loading the full findings file.',
-    '- Use raw Findings and the Finding Manifest as evidence harvest inputs for later review/finalization stages.',
-  ];
-
-  lines.push('', '## Scan Notes');
-  lines.push('- Dry-run output is review-only and did not write SQLite project index data.');
-  lines.push('- Discovery used lightweight structural scanning; project builds and tests were not run.');
-  if (Object.keys(output.scan.skipped_by_reason).length > 0) {
-    lines.push(`- Skipped files: \`${JSON.stringify(output.scan.skipped_by_reason)}\`.`);
-  }
-
-  return `${lines.join('\n')}\n`;
-}
-
-function printDiscoveryDryRun(output, options) {
-  if (options.json) {
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
-  }
-
-  process.stdout.write(renderDiscoveryMarkdown(output));
-}
-
-function readJsonFile(filePath) {
-  const resolvedPath = path.resolve(expandHome(filePath));
-  try {
-    return {
-      path: resolvedPath,
-      data: JSON.parse(fs.readFileSync(resolvedPath, 'utf8')),
-    };
-  } catch (error) {
-    throw new ToolCatalogError(`Unable to read discovery decisions JSON ${resolvedPath}: ${error.message}`, 2);
-  }
-}
-
-function isPlainObject(value) {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function candidateTypeForGroup(groupName) {
-  if (groupName === 'utility_artifacts') {
-    return 'utility_artifact';
-  }
-  if (groupName === 'observed_external_usages') {
-    return 'observed_external_usage';
-  }
-  if (groupName === 'template_patterns') {
-    return 'template_pattern';
-  }
-
-  return null;
-}
-
-function assertNoLegacyDecisionFields(input) {
-  for (const fieldName of LEGACY_DECISION_FIELDS) {
-    if (Object.hasOwn(input, fieldName)) {
-      throw new ToolCatalogError(`Discovery decisions field '${fieldName}' is no longer supported. Use accepted, suppressions, and deferrals.`, 2);
-    }
-  }
-}
-
-function collectAcceptedEntryArray(value, groupName, entries) {
-  if (!value) {
-    return;
-  }
-  const impliedType = candidateTypeForGroup(groupName);
-
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      if (!isPlainObject(entry)) {
-        throw new ToolCatalogError(`Accepted entry in '${groupName}' must be an object.`, 2);
-      }
-      const entryType = entry.entry_type ?? entry.finding_type ?? impliedType;
-      entries.push({
-        ...entry,
-        entry_type: entryType,
-        candidate_type: entryType,
-        candidate_id: normalizeNullableString(entry.finding_id)
-          ?? normalizeNullableString(entry.artifact_key)
-          ?? normalizeNullableString(entry.pattern_key)
-          ?? normalizeNullableString(entry.usage_key),
-      });
-    }
-    return;
-  }
-
-  if (!isPlainObject(value)) {
-    throw new ToolCatalogError(`Discovery decisions field '${groupName}' must be an array or object map.`, 2);
-  }
-
-  for (const [entryKey, entry] of Object.entries(value)) {
-    if (!isPlainObject(entry)) {
-      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' must be an object.`, 2);
-    }
-
-    const selectorMatch = entryKey.match(/^(artifact|template|external):(.*)$/);
-    const selectorType = selectorMatch?.[1] === 'artifact'
-      ? 'utility_artifact'
-      : selectorMatch?.[1] === 'template'
-        ? 'template_pattern'
-        : selectorMatch?.[1] === 'external'
-          ? 'observed_external_usage'
-          : null;
-    const keyIdentity = selectorMatch?.[2] ?? entryKey;
-    const entryType = entry.entry_type
-      ?? entry.finding_type
-      ?? selectorType
-      ?? (Object.hasOwn(entry, 'artifact_key')
-        ? 'utility_artifact'
-        : Object.hasOwn(entry, 'pattern_key')
-          ? 'template_pattern'
-          : Object.hasOwn(entry, 'usage_key')
-            ? 'observed_external_usage'
-            : impliedType);
-
-    if (!entryType) {
-      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' must include entry_type or a typed key prefix.`, 2);
-    }
-    if (selectorType && selectorType !== entryType) {
-      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' uses selector type '${selectorType}' but declares entry_type '${entryType}'.`, 2);
-    }
-
-    const identityField = entryType === 'utility_artifact'
-      ? 'artifact_key'
-      : entryType === 'template_pattern'
-        ? 'pattern_key'
-        : entryType === 'observed_external_usage'
-          ? 'usage_key'
-          : null;
-    if (!identityField) {
-      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' has unsupported entry_type '${entryType}'.`, 2);
-    }
-
-    // 键控 accepted entry 的映射键就是最终 identity，payload 内同名字段只能显式重复，不能改写。
-    const payloadIdentity = normalizeNullableString(entry[identityField]);
-    if (payloadIdentity && payloadIdentity !== keyIdentity) {
-      throw new ToolCatalogError(`Accepted entry '${entryKey}' in '${groupName}' must keep ${identityField} aligned with the map key '${keyIdentity}', received '${payloadIdentity}'.`, 2);
-    }
-
-    entries.push({
-      ...entry,
-      entry_type: entryType,
-      candidate_type: entryType,
-      candidate_id: normalizeNullableString(entry.finding_id) ?? keyIdentity,
-      artifact_key: entryType === 'utility_artifact' ? keyIdentity : entry.artifact_key,
-      pattern_key: entryType === 'template_pattern' ? keyIdentity : entry.pattern_key,
-      usage_key: entryType === 'observed_external_usage' ? keyIdentity : entry.usage_key,
-    });
-  }
-}
-
-function collectFinalAcceptedEntries(input) {
-  const entries = [];
-
-  if (input.accepted === undefined) {
-    return entries;
-  }
-  if (!isPlainObject(input.accepted)) {
-    throw new ToolCatalogError("Discovery decisions field 'accepted' must be an object.", 2);
-  }
-  for (const groupName of CANDIDATE_GROUPS) {
-    collectAcceptedEntryArray(input.accepted[groupName], groupName, entries);
-  }
-
-  return entries;
-}
-
-function collectTraceableDecisionArray(value, fieldName) {
-  if (!value) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    throw new ToolCatalogError(`Discovery decisions field '${fieldName}' must be an array.`, 2);
-  }
-
-  return value.map((item) => {
-    if (!isPlainObject(item)) {
-      throw new ToolCatalogError(`Decision entry in '${fieldName}' must be an object.`, 2);
-    }
-    return item;
-  });
-}
-
-function finalAcceptedCandidateId(entry) {
-  return normalizeNullableString(entry.finding_id)
-    ?? normalizeNullableString(entry.artifact_key)
-    ?? normalizeNullableString(entry.pattern_key)
-    ?? normalizeNullableString(entry.usage_key);
-}
-
-function assertRelativeProjectPath(value, fieldName) {
-  const rawValue = String(value ?? '');
-  const normalized = normalizeRelativePath(rawValue);
-  if (!normalized || path.isAbsolute(rawValue) || normalized === '..' || normalized.startsWith('../')) {
-    throw new ToolCatalogError(`${fieldName} must be a relative path inside the target project.`, 2);
-  }
-
-  return normalized;
-}
-
-function parseSourceAnchorText(value) {
-  const text = normalizeNullableString(value);
-  if (!text) {
-    return null;
-  }
-
-  const match = text.match(/^(.+?)(?::(\d+))?(?:#(.+))?$/);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    path: match[1],
-    line: match[2] ? Number.parseInt(match[2], 10) : 1,
-    symbol: match[3] ?? null,
-  };
-}
-
-function normalizeSourceAnchor(value, fallbackSymbol, fieldName = 'source_anchor') {
-  const rawAnchor = typeof value === 'string' ? parseSourceAnchorText(value) : value;
-  if (!isPlainObject(rawAnchor)) {
-    throw new ToolCatalogError(`${fieldName} must be an object with path, line, and symbol metadata.`, 2);
-  }
-
-  const relativePath = assertRelativeProjectPath(rawAnchor.path, `${fieldName}.path`);
-  const line = Number.parseInt(rawAnchor.line ?? rawAnchor.line_hint ?? 1, 10);
-  if (!Number.isFinite(line) || line < 1) {
-    throw new ToolCatalogError(`${fieldName}.line must be a positive integer line hint.`, 2);
-  }
-
-  const symbol = normalizeNullableString(rawAnchor.symbol ?? rawAnchor.symbol_identity ?? fallbackSymbol);
-  if (!symbol) {
-    throw new ToolCatalogError(`${fieldName}.symbol must identify the source symbol.`, 2);
-  }
-
-  return {
-    path: relativePath,
-    line,
-    symbol,
-    text: `${relativePath}:${line}#${symbol}`,
-  };
-}
-
-function sourceAnchorSql(anchor) {
-  return sqlString(JSON.stringify(anchor));
-}
-
-function normalizeChangedPathScope(item) {
-  if (typeof item === 'string') {
-    return {
-      path: assertRelativeProjectPath(item, 'scan.changed_paths.path'),
-      isDirectory: item.endsWith('/'),
-    };
-  }
-  if (!isPlainObject(item)) {
-    throw new ToolCatalogError('scan.changed_paths entries must be strings or objects.', 2);
-  }
-
-  return {
-    path: assertRelativeProjectPath(item.path ?? item.relativePath ?? item.input, 'scan.changed_paths.path'),
-    isDirectory: Boolean(item.is_directory ?? item.isDirectory),
-  };
-}
-
-function normalizeApplyScope(input) {
-  const scan = isPlainObject(input.scan) ? input.scan : {};
-  const mode = normalizeNullableString(scan.mode ?? input.mode);
-  if (mode !== 'full' && mode !== 'changed') {
-    throw new ToolCatalogError('Discovery decisions must include scan.mode as full or changed.', 2);
-  }
-
-  const changedPathInput = scan.changed_paths ?? input.changed_paths ?? [];
-  if (!Array.isArray(changedPathInput)) {
-    throw new ToolCatalogError('Discovery decisions scan.changed_paths must be an array.', 2);
-  }
-  const changedPaths = changedPathInput.map((item) => normalizeChangedPathScope(item));
-  if (mode === 'changed' && changedPaths.length === 0) {
-    throw new ToolCatalogError('Changed discovery apply requires scan.changed_paths.', 2);
-  }
-
-  return {
-    mode,
-    changedPaths,
-    languageFilters: Array.isArray(scan.language_filters) ? scan.language_filters : [],
-    includeFilters: Array.isArray(scan.include_filters) ? scan.include_filters : [],
-    excludeFilters: Array.isArray(scan.exclude_filters) ? scan.exclude_filters : [],
-  };
-}
-
-function normalizeOriginPriority(value, originType) {
-  const defaultPriority = originType === 'external' ? 50 : 100;
-  const normalizePriority = (rawValue) => {
-    const priority = Number.parseInt(rawValue, 10);
-    if (!Number.isFinite(priority)) {
-      throw new ToolCatalogError('origin_priority priority must be an integer.', 2);
-    }
-    return priority;
-  };
-
-  if (value === null || value === undefined) {
-    return {
-      priority: defaultPriority,
-      reason: originType === 'external' ? 'Observed external utility usage.' : 'Project-owned utility artifact.',
-    };
-  }
-  if (typeof value === 'number' || typeof value === 'string') {
-    return {
-      priority: normalizePriority(value),
-      reason: null,
-    };
-  }
-  if (isPlainObject(value)) {
-    return {
-      priority: normalizePriority(value.priority ?? defaultPriority),
-      reason: truncateText(value.reason, MAX_SUMMARY_CHARS),
-    };
-  }
-
-  throw new ToolCatalogError('origin_priority must be a number, string, object, or null.', 2);
-}
-
-function normalizeUtilityOrigin(candidate) {
-  const originType = normalizeNullableString(candidate.origin_type ?? candidate.origin) ?? 'project';
-  const originKey = normalizeNullableString(candidate.origin_key)
-    ?? (originType === 'project' ? `project:${candidate.module_path ?? 'root'}` : originType);
-  const displayName = normalizeNullableString(candidate.origin_display_name)
-    ?? (originType === 'project' ? `Project ${candidate.module_path ?? 'root'}` : originKey);
-
-  return {
-    originKey,
-    originType,
-    displayName,
-    modulePath: normalizeNullableString(candidate.module_path),
-    sourceAnchor: candidate.source_anchor,
-    summary: truncateText(candidate.origin_summary ?? `${displayName} provides reusable catalog utilities.`, MAX_SUMMARY_CHARS),
-    priority: normalizeOriginPriority(candidate.origin_priority, originType),
-  };
-}
-
-function normalizeUtilityMember(rawMember, artifact) {
-  if (!isPlainObject(rawMember)) {
-    throw new ToolCatalogError(`Member for ${artifact.candidateId} must be an object.`, 2);
-  }
-
-  const name = normalizeNullableString(rawMember.name);
-  if (!name) {
-    throw new ToolCatalogError(`Member for ${artifact.candidateId} must include name.`, 2);
-  }
-  const memberKey = normalizeNullableString(rawMember.member_key) ?? `${artifact.artifactKey}#${name}`;
-  const memberType = normalizeNullableString(rawMember.member_type) ?? 'member';
-  const signatures = normalizeUtilityMemberSignatures(rawMember, memberKey, name);
-  const sourceAnchor = signatures[0].sourceAnchor;
-  const snippet = truncateText(rawMember.snippet, MAX_SNIPPET_CHARS) ?? signatures[0].snippet;
-
-  return {
-    memberKey,
-    name,
-    memberType,
-    signature: signatures[0].signature,
-    sourceAnchor,
-    summary: normalizeRequiredText(rawMember.summary ?? rawMember.catalog_prose ?? rawMember.description, `Accepted artifact member ${memberKey} summary`),
-    usageNotes: truncateText(rawMember.usage_notes, MAX_SUMMARY_CHARS),
-    limitations: truncateText(rawMember.limitations, MAX_SUMMARY_CHARS),
-    capabilityTags: normalizeCapabilityTags(rawMember.capability_tags ?? rawMember.tags, `Accepted artifact member ${memberKey} capability_tags`),
-    snippet,
-    signatures,
-  };
-}
-
-function normalizeUtilityMemberSignatures(rawMember, memberKey, memberName) {
-  const rawSignatures = Array.isArray(rawMember.signatures) && rawMember.signatures.length > 0
-    ? rawMember.signatures
-    : [{
-      signature: rawMember.signature ?? memberName,
-      source_anchor: rawMember.source_anchor,
-      snippet: rawMember.snippet,
-    }];
-  const signatures = [];
-  const seen = new Set();
-
-  rawSignatures.forEach((rawSignature, index) => {
-    const fieldPrefix = `Accepted artifact member ${memberKey} signatures[${index}]`;
-    const signatureValue = isPlainObject(rawSignature) ? rawSignature.signature : rawSignature;
-    const sourceAnchorValue = isPlainObject(rawSignature) ? rawSignature.source_anchor : rawMember.source_anchor;
-    const snippetValue = isPlainObject(rawSignature) ? rawSignature.snippet : rawMember.snippet;
-    const signature = normalizeRequiredText(signatureValue, `${fieldPrefix} signature`);
-    const sourceAnchor = normalizeSourceAnchor(sourceAnchorValue, `${memberKey}#${index + 1}`, `${fieldPrefix} source_anchor`);
-    const snippet = truncateText(snippetValue, MAX_SNIPPET_CHARS);
-    const dedupeKey = `${sourceAnchor.text}::${signature}`;
-    if (seen.has(dedupeKey)) {
-      return;
-    }
-    seen.add(dedupeKey);
-    signatures.push({
-      signature,
-      sourceAnchor,
-      snippet,
-    });
-  });
-
-  if (signatures.length === 0) {
-    throw new ToolCatalogError(`Accepted artifact member ${memberKey} must include at least one signature.`, 2);
-  }
-
-  return signatures;
-}
-
-function mergeCapabilityTagLists(existingTags, incomingTags) {
-  const byTag = new Map();
-  for (const tag of [...(existingTags ?? []), ...(incomingTags ?? [])]) {
-    if (!tag?.tag) {
-      continue;
-    }
-    const existing = byTag.get(tag.tag);
-    byTag.set(tag.tag, {
-      tag: tag.tag,
-      description: tag.description ?? existing?.description ?? null,
-    });
-  }
-  return [...byTag.values()];
-}
-
-function mergeMemberSignatures(existingSignatures, incomingSignatures) {
-  const merged = [];
-  const seen = new Set();
-
-  for (const signature of [...(existingSignatures ?? []), ...(incomingSignatures ?? [])]) {
-    if (!signature?.signature || !signature?.sourceAnchor?.text) {
-      continue;
-    }
-    const key = `${signature.sourceAnchor.text}::${signature.signature}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    merged.push(signature);
-  }
-
-  return merged;
-}
-
-function aggregateUtilityMembers(rawMembers, artifact) {
-  const groupedMembers = new Map();
-
-  for (const rawMember of rawMembers) {
-    const normalized = normalizeUtilityMember(rawMember, artifact);
-    const existing = groupedMembers.get(normalized.memberKey);
-    if (!existing) {
-      groupedMembers.set(normalized.memberKey, normalized);
-      continue;
-    }
-    if (existing.name !== normalized.name || existing.memberType !== normalized.memberType) {
-      throw new ToolCatalogError(`Accepted artifact member ${normalized.memberKey} has conflicting logical member metadata.`, 2);
-    }
-
-    existing.summary = existing.summary ?? normalized.summary;
-    existing.usageNotes = existing.usageNotes ?? normalized.usageNotes;
-    existing.limitations = existing.limitations ?? normalized.limitations;
-    existing.snippet = existing.snippet ?? normalized.snippet;
-    existing.capabilityTags = mergeCapabilityTagLists(existing.capabilityTags, normalized.capabilityTags);
-    existing.signatures = mergeMemberSignatures(existing.signatures, normalized.signatures);
-    existing.signature = existing.signatures[0].signature;
-    existing.sourceAnchor = existing.signatures[0].sourceAnchor;
-  }
-
-  return [...groupedMembers.values()];
-}
-
-function normalizeUtilityArtifact(candidate) {
-  const name = normalizeNullableString(candidate.name ?? candidate.qualified_name);
-  if (!name) {
-    throw new ToolCatalogError(`Accepted utility artifact ${candidate.candidate_id} must include name.`, 2);
-  }
-  const artifactKey = normalizeNullableString(candidate.artifact_key ?? candidate.candidate_id);
-  const sourceAnchor = normalizeSourceAnchor(candidate.source_anchor, candidate.qualified_name ?? name, `${candidate.candidate_id} source_anchor`);
-  const artifact = {
-    candidateId: candidate.candidate_id,
-    artifactKey,
-    artifactType: normalizeNullableString(candidate.artifact_type) ?? 'utility_artifact',
-    name,
-    language: normalizeNullableString(candidate.language),
-    framework: normalizeNullableString(candidate.framework),
-    modulePath: normalizeNullableString(candidate.module_path),
-    sourceAnchor,
-    summary: normalizeRequiredText(candidate.summary ?? candidate.catalog_prose ?? candidate.description, `Accepted utility artifact ${candidate.candidate_id} summary`),
-    usageNotes: truncateText(candidate.usage_notes, MAX_SUMMARY_CHARS),
-    limitations: truncateText(candidate.limitations, MAX_SUMMARY_CHARS),
-    capabilityTags: normalizeCapabilityTags(candidate.capability_tags ?? candidate.tags, `Accepted utility artifact ${candidate.candidate_id} capability_tags`),
-    snippet: truncateText(candidate.snippet, MAX_SNIPPET_CHARS),
-    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
-  };
-  const members = Array.isArray(candidate.members) ? aggregateUtilityMembers(candidate.members, artifact) : [];
-  if (members.length === 0) {
-    throw new ToolCatalogError(`Accepted utility artifact ${candidate.candidate_id} must include at least one member.`, 2);
-  }
-
-  return {
-    ...artifact,
-    origin: normalizeUtilityOrigin({ ...candidate, source_anchor: sourceAnchor }),
-    members,
-  };
-}
-
-function normalizeTemplateInstance(rawInstance, pattern) {
-  if (!isPlainObject(rawInstance)) {
-    throw new ToolCatalogError(`Template instance for ${pattern.candidateId} must be an object.`, 2);
-  }
-  const sourceAnchor = normalizeSourceAnchor(rawInstance.source_anchor, pattern.patternKey, `template ${pattern.patternKey} instance source_anchor`);
-
-  return {
-    sourceAnchor,
-    modulePath: normalizeNullableString(rawInstance.module_path),
-    snippet: truncateText(rawInstance.snippet, MAX_SNIPPET_CHARS),
-  };
-}
-
-function normalizeTemplatePattern(candidate) {
-  const patternKey = normalizeNullableString(candidate.pattern_key)
-    ?? normalizeNullableString(candidate.candidate_id)?.replace(/^template-pattern:/, '');
-  if (!patternKey) {
-    throw new ToolCatalogError(`Accepted template pattern ${candidate.candidate_id} must include pattern_key.`, 2);
-  }
-  const name = normalizeNullableString(candidate.name) ?? patternKey;
-  const pattern = {
-    candidateId: candidate.candidate_id,
-    patternKey,
-    name,
-    language: normalizeNullableString(candidate.language),
-    framework: normalizeNullableString(candidate.framework),
-    modulePath: normalizeNullableString(candidate.module_path),
-    summary: normalizeRequiredText(candidate.summary ?? candidate.catalog_prose ?? candidate.description, `Accepted template pattern ${candidate.candidate_id} summary`),
-    usageNotes: truncateText(candidate.usage_notes, MAX_SUMMARY_CHARS),
-    limitations: truncateText(candidate.limitations, MAX_SUMMARY_CHARS),
-    capabilityTags: normalizeCapabilityTags(candidate.capability_tags ?? candidate.tags, `Accepted template pattern ${candidate.candidate_id} capability_tags`),
-    snippet: truncateText(candidate.snippet, MAX_SNIPPET_CHARS),
-    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
-  };
-  const instances = Array.isArray(candidate.instances) ? candidate.instances.map((instance) => normalizeTemplateInstance(instance, pattern)) : [];
-  if (instances.length === 0) {
-    throw new ToolCatalogError(`Accepted template pattern ${candidate.candidate_id} must include representative instances.`, 2);
-  }
-
-  return {
-    ...pattern,
-    modulePath: pattern.modulePath ?? instances[0].modulePath,
-    instances,
-  };
-}
-
-function normalizeObservedExternalUsage(candidate) {
-  const originKey = normalizeNullableString(candidate.origin_key);
-  if (!originKey) {
-    throw new ToolCatalogError(`Accepted observed external usage ${candidate.candidate_id} must include origin_key.`, 2);
-  }
-  const sourceAnchor = normalizeSourceAnchor(candidate.source_anchor, originKey, `${candidate.candidate_id} source_anchor`);
-  const origin = normalizeUtilityOrigin({
-    ...candidate,
-    origin: 'external',
-    origin_key: originKey,
-    origin_display_name: candidate.origin_display_name ?? originKey,
-    source_anchor: sourceAnchor,
-  });
-
-  return {
-    candidateId: candidate.candidate_id,
-    usageKey: normalizeNullableString(candidate.usage_key ?? candidate.candidate_id),
-    origin,
-    language: normalizeNullableString(candidate.language),
-    framework: normalizeNullableString(candidate.framework),
-    sourceAnchor,
-    importText: truncateText(candidate.import_text, MAX_SNIPPET_CHARS),
-    callText: truncateText(candidate.call_text, MAX_SNIPPET_CHARS),
-    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
-  };
-}
-
-function firstCandidateAnchor(candidate) {
-  if (candidate.source_anchor) {
-    return candidate.source_anchor;
-  }
-  if (Array.isArray(candidate.instances) && candidate.instances[0]?.source_anchor) {
-    return candidate.instances[0].source_anchor;
-  }
-  if (candidate.call_anchor) {
-    return candidate.call_anchor;
-  }
-
-  return null;
-}
-
-function normalizeIgnoredCandidate(candidate) {
-  const candidateId = normalizeNullableString(candidate.finding_id);
-  if (!candidateId) {
-    throw new ToolCatalogError('Each suppression must include finding_id.', 2);
-  }
-  const candidateType = normalizeNullableString(candidate.finding_type) ?? 'unknown';
-  const sourceAnchor = normalizeSourceAnchor(firstCandidateAnchor(candidate), candidateId, `${candidateId} source_anchor`);
-
-  return {
-    candidateId,
-    candidateType,
-    artifactKey: normalizeNullableString(candidate.artifact_key ?? candidate.finding_id),
-    patternKey: normalizeNullableString(candidate.pattern_key)
-      ?? (candidateType === 'template_pattern' ? candidateId.replace(/^template-pattern:/, '') : null),
-    usageKey: normalizeNullableString(candidate.usage_key ?? candidate.finding_id),
-    sourceAnchor,
-    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
-    reason: truncateText(candidate.reason ?? candidate.ignore_reason ?? 'Ignored by discovery apply decision.', MAX_SUMMARY_CHARS),
-  };
-}
-
-function normalizeDeferredCandidate(candidate) {
-  const candidateId = normalizeNullableString(candidate.finding_id);
-  if (!candidateId) {
-    throw new ToolCatalogError('Each deferral must include finding_id.', 2);
-  }
-  const candidateType = normalizeNullableString(candidate.finding_type) ?? 'unknown';
-  const sourceAnchor = normalizeSourceAnchor(firstCandidateAnchor(candidate), candidateId, `${candidateId} source_anchor`);
-
-  return {
-    candidateId,
-    candidateType,
-    artifactKey: normalizeNullableString(candidate.artifact_key ?? candidate.finding_id),
-    patternKey: normalizeNullableString(candidate.pattern_key)
-      ?? (candidateType === 'template_pattern' ? candidateId.replace(/^template-pattern:/, '') : null),
-    usageKey: normalizeNullableString(candidate.usage_key ?? candidate.finding_id),
-    sourceAnchor,
-    discoveryFingerprint: normalizeNullableString(candidate.discovery_fingerprint),
-    reason: truncateText(candidate.reason ?? candidate.defer_reason ?? candidate.question ?? 'Deferred by discovery apply decision.', MAX_SUMMARY_CHARS),
-  };
-}
-
-function hasSelectionDescription(value) {
-  return Object.hasOwn(value, 'summary') || Object.hasOwn(value, 'catalog_prose') || Object.hasOwn(value, 'description');
-}
-
-function mergeCandidateMembers(candidateMembers, decisionMembers) {
-  if (!Array.isArray(decisionMembers)) {
-    return candidateMembers;
-  }
-  if (!Array.isArray(candidateMembers)) {
-    return decisionMembers;
-  }
-
-  const decisionByKey = new Map();
-  for (const member of decisionMembers) {
-    const key = normalizeNullableString(member.member_key) ?? normalizeNullableString(member.name);
-    if (key) {
-      decisionByKey.set(key, member);
-    }
-  }
-
-  return candidateMembers.map((member) => {
-    const key = normalizeNullableString(member.member_key) ?? normalizeNullableString(member.name);
-    const byKey = key ? decisionByKey.get(key) : null;
-    const byName = normalizeNullableString(member.name) ? decisionByKey.get(normalizeNullableString(member.name)) : null;
-    const decision = byKey ?? byName;
-    if (!decision) {
-      return member;
-    }
-    const merged = { ...member, ...decision };
-    if (!hasSelectionDescription(decision)) {
-      delete merged.summary;
-      delete merged.catalog_prose;
-      delete merged.description;
-    }
-    return merged;
-  });
-}
-
-function mergeCandidateDecision(candidate, decision) {
-  if (!decision) {
-    return candidate;
-  }
-
-  const merged = {
-    ...candidate,
-    ...decision,
-    candidate_id: candidate.candidate_id,
-    candidate_type: decision.candidate_type ?? candidate.candidate_type,
-    source_anchor: decision.source_anchor ?? candidate.source_anchor,
-    members: mergeCandidateMembers(candidate.members, decision.members),
-    instances: decision.instances ?? candidate.instances,
-  };
-  if (!hasSelectionDescription(decision)) {
-    delete merged.summary;
-    delete merged.catalog_prose;
-    delete merged.description;
-  }
-
-  return merged;
-}
-
-function normalizeExplicitOriginPriorities(input) {
-  if (!input.origin_priorities) {
-    return [];
-  }
-  if (!Array.isArray(input.origin_priorities)) {
-    throw new ToolCatalogError('origin_priorities must be an array.', 2);
-  }
-
-  return input.origin_priorities.map((item) => {
-    if (!isPlainObject(item)) {
-      throw new ToolCatalogError('Each origin priority must be an object.', 2);
-    }
-    const originKey = normalizeNullableString(item.origin_key);
-    if (!originKey) {
-      throw new ToolCatalogError('Each origin priority must include origin_key.', 2);
-    }
-    const originType = normalizeNullableString(item.origin_type) ?? 'project';
-    const priority = normalizeOriginPriority(item.priority ?? item.origin_priority, originType);
-
-    return {
-      originKey,
-      originType,
-      displayName: normalizeNullableString(item.display_name) ?? originKey,
-      modulePath: normalizeNullableString(item.module_path),
-      sourceAnchor: item.source_anchor ? normalizeSourceAnchor(item.source_anchor, originKey, `origin ${originKey} source_anchor`) : null,
-      summary: truncateText(item.summary, MAX_SUMMARY_CHARS),
-      priority: {
-        priority: priority.priority,
-        reason: truncateText(item.reason ?? priority.reason, MAX_SUMMARY_CHARS),
-      },
-    };
-  });
-}
-
-function normalizeApplyDecisions(input) {
-  if (!isPlainObject(input)) {
-    throw new ToolCatalogError('Discovery decisions JSON must be an object.', 2);
-  }
-  if (input.failed === true || input.extraction_failed === true || input.status === 'failed') {
-    throw new ToolCatalogError('Refusing to apply failed discovery or extraction results.', 2);
-  }
-  assertNoLegacyDecisionFields(input);
-
-  const scope = normalizeApplyScope(input);
-  const finalAcceptedEntries = collectFinalAcceptedEntries(input);
-  const suppressionEntries = collectTraceableDecisionArray(input.suppressions, 'suppressions');
-  const deferralEntries = collectTraceableDecisionArray(input.deferrals, 'deferrals');
-  const normalized = {
-    scope,
-    acceptedUtilities: [],
-    acceptedTemplates: [],
-    acceptedExternalUsages: [],
-    ignoredCandidates: [],
-    deferredCandidates: [],
-    requiredDecisions: [],
-    explicitOriginPriorities: normalizeExplicitOriginPriorities(input),
-    protectedUtilityKeys: new Set(),
-    protectedTemplateKeys: new Set(),
-    protectedExternalUsageKeys: new Set(),
-  };
-
-  const protectCandidate = (candidateType, candidate) => {
-    if (candidateType === 'utility_artifact') {
-      normalized.protectedUtilityKeys.add(normalizeNullableString(candidate.artifactKey ?? candidate.artifact_key ?? candidate.candidate_id));
-    } else if (candidateType === 'template_pattern') {
-      normalized.protectedTemplateKeys.add(normalizeNullableString(candidate.patternKey ?? candidate.pattern_key) ?? normalizeNullableString(candidate.candidate_id)?.replace(/^template-pattern:/, ''));
-    } else if (candidateType === 'observed_external_usage') {
-      normalized.protectedExternalUsageKeys.add(normalizeNullableString(candidate.usageKey ?? candidate.usage_key ?? candidate.candidate_id));
-    }
-  };
-
-  for (const entry of finalAcceptedEntries) {
-    const candidateId = finalAcceptedCandidateId(entry);
-    if (!candidateId) {
-      throw new ToolCatalogError('Each accepted entry must include artifact_key, pattern_key, usage_key, or finding_id.', 2);
-    }
-    const merged = {
-      ...entry,
-      candidate_id: candidateId,
-      candidate_type: entry.candidate_type ?? entry.entry_type ?? entry.finding_type,
-    };
-
-    if (merged.candidate_type === 'utility_artifact') {
-      const artifact = normalizeUtilityArtifact(merged);
-      normalized.acceptedUtilities.push(artifact);
-      normalized.protectedUtilityKeys.add(artifact.artifactKey);
-    } else if (merged.candidate_type === 'template_pattern') {
-      const pattern = normalizeTemplatePattern(merged);
-      normalized.acceptedTemplates.push(pattern);
-      normalized.protectedTemplateKeys.add(pattern.patternKey);
-    } else if (merged.candidate_type === 'observed_external_usage') {
-      const usage = normalizeObservedExternalUsage(merged);
-      normalized.acceptedExternalUsages.push(usage);
-      normalized.protectedExternalUsageKeys.add(usage.usageKey);
-    } else {
-      throw new ToolCatalogError(`Unsupported accepted entry type '${merged.candidate_type}' for ${candidateId}.`, 2);
-    }
-  }
-
-  for (const item of suppressionEntries) {
-    const ignored = normalizeIgnoredCandidate(item);
-    normalized.ignoredCandidates.push(ignored);
-    protectCandidate(ignored.candidateType, ignored);
-  }
-
-  for (const item of deferralEntries) {
-    const deferred = normalizeDeferredCandidate(item);
-    normalized.deferredCandidates.push(deferred);
-    protectCandidate(deferred.candidateType, deferred);
-  }
-
-  return normalized;
-}
-
-function sourceAnchorValueSql(anchor) {
-  return anchor ? sourceAnchorSql(anchor) : 'NULL';
-}
-
-function sourceAnchorPathSql(columnName) {
-  return `CASE WHEN json_valid(${columnName}) THEN json_extract(${columnName}, '$.path') ELSE ${columnName} END`;
-}
-
-function sourceAnchorTextSql(columnName) {
-  return `CASE
-    WHEN json_valid(${columnName}) THEN json_extract(${columnName}, '$.path') || ':' || COALESCE(json_extract(${columnName}, '$.line'), 1) || '#' || COALESCE(json_extract(${columnName}, '$.symbol'), '')
-    ELSE ${columnName}
-  END`;
-}
-
-function pathScopeCondition(pathExpression, scope) {
-  if (scope.mode === 'full') {
-    return '1 = 1';
-  }
-
-  const conditions = scope.changedPaths.map((item) => {
-    const exactPath = `${pathExpression} = ${sqlString(item.path)}`;
-    if (!item.isDirectory) {
-      return exactPath;
-    }
-
-    return `(${exactPath} OR ${pathExpression} LIKE ${sqlString(`${item.path.replace(/\/+$/, '')}/%`)})`;
-  });
-
-  return conditions.length > 0 ? `(${conditions.join(' OR ')})` : '0 = 1';
-}
-
-function artifactIdSql(projectId, artifactKey) {
-  return `(SELECT id FROM artifacts WHERE project_id = ${sqlString(projectId)} AND artifact_key = ${sqlString(artifactKey)})`;
-}
-
-function patternIdSql(projectId, patternKey) {
-  return `(SELECT id FROM template_patterns WHERE project_id = ${sqlString(projectId)} AND pattern_key = ${sqlString(patternKey)})`;
-}
-
-function memberIdSql(projectId, artifactKey, memberKey) {
-  return `(SELECT artifact_members.id
-FROM artifact_members
-JOIN artifacts ON artifacts.id = artifact_members.artifact_id
-WHERE artifacts.project_id = ${sqlString(projectId)}
-  AND artifacts.artifact_key = ${sqlString(artifactKey)}
-  AND artifact_members.member_key = ${sqlString(memberKey)})`;
-}
-
-function resetMemberSignaturesSql(memberId, signatures) {
-  const statements = [`
-DELETE FROM member_signatures
-WHERE member_id = ${memberId};
-`];
-
-  for (const signature of signatures) {
-    statements.push(`
-INSERT INTO member_signatures (
-  member_id, signature, source_anchor, updated_at
-) VALUES (
-  ${memberId},
-  ${sqlString(signature.signature)},
-  ${sourceAnchorSql(signature.sourceAnchor)},
-  datetime('now')
-) ON CONFLICT(member_id, source_anchor) DO UPDATE SET
-  signature = excluded.signature,
-  updated_at = datetime('now');
-`);
-  }
-
-  return statements.join('\n');
-}
-
-function upsertOriginSql(projectId, origin) {
-  return `
-INSERT INTO utility_origins (
-  project_id, origin_key, origin_type, display_name, module_path, source_anchor, summary, updated_at
-) VALUES (
-  ${sqlString(projectId)},
-  ${sqlString(origin.originKey)},
-  ${sqlString(origin.originType)},
-  ${sqlString(origin.displayName)},
-  ${sqlString(origin.modulePath)},
-  ${sourceAnchorValueSql(origin.sourceAnchor)},
-  ${sqlString(origin.summary)},
-  datetime('now')
-) ON CONFLICT(project_id, origin_key) DO UPDATE SET
-  origin_type = excluded.origin_type,
-  display_name = excluded.display_name,
-  module_path = excluded.module_path,
-  source_anchor = excluded.source_anchor,
-  summary = excluded.summary,
-  updated_at = datetime('now');
-`;
-}
-
-function upsertOriginPrioritySql(projectId, origin) {
-  return `
-INSERT INTO origin_priorities (
-  project_id, origin_id, priority, reason, updated_at
-)
-SELECT
-  ${sqlString(projectId)},
-  id,
-  ${sqlInteger(origin.priority.priority)},
-  ${sqlString(origin.priority.reason)},
-  datetime('now')
-FROM utility_origins
-WHERE project_id = ${sqlString(projectId)}
-  AND origin_key = ${sqlString(origin.originKey)}
-ON CONFLICT(project_id, origin_id) DO UPDATE SET
-  priority = excluded.priority,
-  reason = excluded.reason,
-  updated_at = datetime('now');
-`;
-}
-
-function capabilityTagTexts(tags) {
-  return tags.map((tag) => tag.tag).join('\n');
-}
-
-function upsertCapabilityTagSql(projectId, tag) {
-  return `
-INSERT INTO capability_tags (
-  project_id, tag, description, updated_at
-) VALUES (
-  ${sqlString(projectId)},
-  ${sqlString(tag.tag)},
-  ${sqlString(tag.description)},
-  datetime('now')
-) ON CONFLICT(project_id, tag) DO UPDATE SET
-  description = COALESCE(excluded.description, capability_tags.description),
-  updated_at = datetime('now');
-`;
-}
-
-function resetEntryCapabilityTagsSql(projectId, entryType, entryIdSql, tags) {
-  const statements = [`
-DELETE FROM entry_capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = ${sqlString(entryType)}
-  AND entry_id = ${entryIdSql};
-`];
-
-  for (const tag of tags) {
-    statements.push(upsertCapabilityTagSql(projectId, tag));
-    statements.push(`
-INSERT OR IGNORE INTO entry_capability_tags (
-  project_id, entry_type, entry_id, tag_id
-)
-SELECT
-  ${sqlString(projectId)},
-  ${sqlString(entryType)},
-  ${entryIdSql},
-  id
-FROM capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND tag = ${sqlString(tag.tag)};
-`);
-  }
-
-  return statements.join('\n');
-}
-
-function upsertArtifactSql(projectId, artifact) {
-  const artifactId = artifactIdSql(projectId, artifact.artifactKey);
-  const memberKeys = sqlStringList(artifact.members.map((member) => member.memberKey));
-  const deleteMemberFilter = memberKeys ? `AND member_key NOT IN (${memberKeys})` : '';
-  const statements = [
-    upsertOriginSql(projectId, artifact.origin),
-    upsertOriginPrioritySql(projectId, artifact.origin),
-    `
-INSERT INTO artifacts (
-  project_id, origin_id, artifact_key, artifact_type, name, language, framework, module_path, source_anchor, summary, usage_notes, limitations, snippet, updated_at
-) VALUES (
-  ${sqlString(projectId)},
-  (SELECT id FROM utility_origins WHERE project_id = ${sqlString(projectId)} AND origin_key = ${sqlString(artifact.origin.originKey)}),
-  ${sqlString(artifact.artifactKey)},
-  ${sqlString(artifact.artifactType)},
-  ${sqlString(artifact.name)},
-  ${sqlString(artifact.language)},
-  ${sqlString(artifact.framework)},
-  ${sqlString(artifact.modulePath)},
-  ${sourceAnchorSql(artifact.sourceAnchor)},
-  ${sqlString(artifact.summary)},
-  ${sqlString(artifact.usageNotes)},
-  ${sqlString(artifact.limitations)},
-  ${sqlString(artifact.snippet)},
-  datetime('now')
-) ON CONFLICT(project_id, artifact_key) DO UPDATE SET
-  origin_id = excluded.origin_id,
-  artifact_type = excluded.artifact_type,
-  name = excluded.name,
-  language = excluded.language,
-  framework = excluded.framework,
-  module_path = excluded.module_path,
-  source_anchor = excluded.source_anchor,
-  summary = excluded.summary,
-  usage_notes = excluded.usage_notes,
-  limitations = excluded.limitations,
-  snippet = excluded.snippet,
-  updated_at = datetime('now');
-`,
-    resetEntryCapabilityTagsSql(projectId, 'artifact', artifactId, artifact.capabilityTags),
-    `
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND artifact_id = ${artifactId};
-`,
-    `
-DELETE FROM entry_capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = 'member'
-  AND entry_id IN (
-    SELECT id FROM artifact_members
-    WHERE artifact_id = ${artifactId}
-      ${deleteMemberFilter}
-  );
-`,
-    `
-DELETE FROM artifact_members
-WHERE artifact_id = ${artifactId}
-  ${deleteMemberFilter};
-`,
-  ];
-
-  for (const member of artifact.members) {
-    const memberId = memberIdSql(projectId, artifact.artifactKey, member.memberKey);
-    const body = [
-      artifact.summary,
-      artifact.usageNotes,
-      artifact.limitations,
-      capabilityTagTexts(member.capabilityTags),
-      member.summary,
-      member.usageNotes,
-      member.limitations,
-      ...member.signatures.map((signature) => signature.signature),
-      artifact.language,
-      artifact.framework,
-      artifact.modulePath,
-      artifact.origin.displayName,
-    ].filter(Boolean).join('\n');
-    statements.push(`
-INSERT INTO artifact_members (
-  artifact_id, member_key, name, member_type, signature, source_anchor, summary, usage_notes, limitations, snippet, updated_at
-) VALUES (
-  ${artifactId},
-  ${sqlString(member.memberKey)},
-  ${sqlString(member.name)},
-  ${sqlString(member.memberType)},
-  ${sqlString(member.signature)},
-  ${sourceAnchorSql(member.sourceAnchor)},
-  ${sqlString(member.summary)},
-  ${sqlString(member.usageNotes)},
-  ${sqlString(member.limitations)},
-  ${sqlString(member.snippet)},
-  datetime('now')
-) ON CONFLICT(artifact_id, member_key) DO UPDATE SET
-  name = excluded.name,
-  member_type = excluded.member_type,
-  signature = excluded.signature,
-  source_anchor = excluded.source_anchor,
-  summary = excluded.summary,
-  usage_notes = excluded.usage_notes,
-  limitations = excluded.limitations,
-  snippet = excluded.snippet,
-  updated_at = datetime('now');
-`);
-    statements.push(resetMemberSignaturesSql(memberId, member.signatures));
-    statements.push(resetEntryCapabilityTagsSql(projectId, 'member', memberId, member.capabilityTags));
-    statements.push(`
-INSERT INTO fts_entries (
-  project_id, entry_type, artifact_id, member_id, title, body, source_anchor
-) VALUES (
-  ${sqlString(projectId)},
-  'member',
-  ${artifactId},
-  ${memberId},
-  ${sqlString(`${artifact.name}.${member.name}`)},
-  ${sqlString(body)},
-  ${sqlString(member.sourceAnchor.text)}
-);
-`);
-  }
-
-  const artifactBody = [
-    artifact.summary,
-    artifact.usageNotes,
-    artifact.limitations,
-    capabilityTagTexts(artifact.capabilityTags),
-    artifact.language,
-    artifact.framework,
-    artifact.modulePath,
-    artifact.origin.displayName,
-    artifact.members.map((member) => `${member.name} ${member.signatures.map((signature) => signature.signature).join(' | ')}`).join('\n'),
-  ].filter(Boolean).join('\n');
-  statements.push(`
-INSERT INTO fts_entries (
-  project_id, entry_type, artifact_id, title, body, source_anchor
-) VALUES (
-  ${sqlString(projectId)},
-  'artifact',
-  ${artifactId},
-  ${sqlString(artifact.name)},
-  ${sqlString(artifactBody)},
-  ${sqlString(artifact.sourceAnchor.text)}
-);
-`);
-
-  return statements.join('\n');
-}
-
-function upsertTemplateSql(projectId, pattern) {
-  const patternId = patternIdSql(projectId, pattern.patternKey);
-  const instanceAnchors = sqlStringList(pattern.instances.map((instance) => JSON.stringify(instance.sourceAnchor)));
-  const deleteInstanceFilter = instanceAnchors ? `AND source_anchor NOT IN (${instanceAnchors})` : '';
-  const statements = [
-    `
-INSERT INTO template_patterns (
-  project_id, pattern_key, name, language, framework, module_path, summary, usage_notes, limitations, snippet, updated_at
-) VALUES (
-  ${sqlString(projectId)},
-  ${sqlString(pattern.patternKey)},
-  ${sqlString(pattern.name)},
-  ${sqlString(pattern.language)},
-  ${sqlString(pattern.framework)},
-  ${sqlString(pattern.modulePath)},
-  ${sqlString(pattern.summary)},
-  ${sqlString(pattern.usageNotes)},
-  ${sqlString(pattern.limitations)},
-  ${sqlString(pattern.snippet)},
-  datetime('now')
-) ON CONFLICT(project_id, pattern_key) DO UPDATE SET
-  name = excluded.name,
-  language = excluded.language,
-  framework = excluded.framework,
-  module_path = excluded.module_path,
-  summary = excluded.summary,
-  usage_notes = excluded.usage_notes,
-  limitations = excluded.limitations,
-  snippet = excluded.snippet,
-  updated_at = datetime('now');
-`,
-    resetEntryCapabilityTagsSql(projectId, 'template_pattern', patternId, pattern.capabilityTags),
-    `
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = 'template_pattern'
-  AND pattern_id = ${patternId};
-`,
-    `
-DELETE FROM template_instances
-WHERE pattern_id = ${patternId}
-  ${deleteInstanceFilter};
-`,
-  ];
-
-  for (const instance of pattern.instances) {
-    statements.push(`
-INSERT INTO template_instances (
-  pattern_id, source_anchor, module_path, snippet, updated_at
-) VALUES (
-  ${patternId},
-  ${sourceAnchorSql(instance.sourceAnchor)},
-  ${sqlString(instance.modulePath)},
-  ${sqlString(instance.snippet)},
-  datetime('now')
-) ON CONFLICT(pattern_id, source_anchor) DO UPDATE SET
-  module_path = excluded.module_path,
-  snippet = excluded.snippet,
-  updated_at = datetime('now');
-`);
-  }
-
-  const body = [
-    pattern.summary,
-    pattern.usageNotes,
-    pattern.limitations,
-    capabilityTagTexts(pattern.capabilityTags),
-    pattern.language,
-    pattern.framework,
-    pattern.modulePath,
-    pattern.instances.map((instance) => instance.sourceAnchor.text).join('\n'),
-  ].filter(Boolean).join('\n');
-  statements.push(`
-INSERT INTO fts_entries (
-  project_id, entry_type, pattern_id, title, body, source_anchor
-) VALUES (
-  ${sqlString(projectId)},
-  'template_pattern',
-  ${patternId},
-  ${sqlString(pattern.name)},
-  ${sqlString(body)},
-  ${sqlString(pattern.instances[0].sourceAnchor.text)}
-);
-`);
-
-  return statements.join('\n');
-}
-
-function upsertExternalUsageSql(projectId, usage) {
-  return [
-    upsertOriginSql(projectId, usage.origin),
-    upsertOriginPrioritySql(projectId, usage.origin),
-    `
-INSERT INTO observed_external_usages (
-  project_id, origin_id, artifact_id, usage_key, source_anchor, import_text, call_text, language, framework, updated_at
-) VALUES (
-  ${sqlString(projectId)},
-  (SELECT id FROM utility_origins WHERE project_id = ${sqlString(projectId)} AND origin_key = ${sqlString(usage.origin.originKey)}),
-  NULL,
-  ${sqlString(usage.usageKey)},
-  ${sourceAnchorSql(usage.sourceAnchor)},
-  ${sqlString(usage.importText)},
-  ${sqlString(usage.callText)},
-  ${sqlString(usage.language)},
-  ${sqlString(usage.framework)},
-  datetime('now')
-) ON CONFLICT(project_id, usage_key) DO UPDATE SET
-  origin_id = excluded.origin_id,
-  source_anchor = excluded.source_anchor,
-  import_text = excluded.import_text,
-  call_text = excluded.call_text,
-  language = excluded.language,
-  framework = excluded.framework,
-  updated_at = datetime('now');
-`,
-  ].join('\n');
-}
-
-function upsertExplicitOriginPrioritySql(projectId, origin) {
-  return [
-    upsertOriginSql(projectId, origin),
-    upsertOriginPrioritySql(projectId, origin),
-  ].join('\n');
-}
-
-function ignoredCandidateSql(projectId, candidate) {
-  return `
-INSERT INTO ignored_candidates (
-  project_id, candidate_key, candidate_type, source_anchor, reason, updated_at
-) VALUES (
-  ${sqlString(projectId)},
-  ${sqlString(candidate.candidateId)},
-  ${sqlString(candidate.candidateType)},
-  ${sourceAnchorSql(candidate.sourceAnchor)},
-  ${sqlString(candidate.reason)},
-  datetime('now')
-) ON CONFLICT(project_id, candidate_key) DO UPDATE SET
-  candidate_type = excluded.candidate_type,
-  source_anchor = excluded.source_anchor,
-  reason = excluded.reason,
-  updated_at = datetime('now');
-`;
-}
-
-function deferredCandidateSql(projectId, candidate) {
-  return `
-INSERT INTO deferred_candidates (
-  project_id, candidate_key, candidate_type, source_anchor, reason, updated_at
-) VALUES (
-  ${sqlString(projectId)},
-  ${sqlString(candidate.candidateId)},
-  ${sqlString(candidate.candidateType)},
-  ${sourceAnchorSql(candidate.sourceAnchor)},
-  ${sqlString(candidate.reason)},
-  datetime('now')
-) ON CONFLICT(project_id, candidate_key) DO UPDATE SET
-  candidate_type = excluded.candidate_type,
-  source_anchor = excluded.source_anchor,
-  reason = excluded.reason,
-  updated_at = datetime('now');
-`;
-}
-
-function discoveryFingerprintSql(projectId, record) {
-  return `
-INSERT INTO discovery_fingerprints (
-  project_id, record_family, record_kind, record_key, source_anchor, source_paths, match_keys, structural_fingerprint, fingerprint_algorithm, updated_at
-) VALUES (
-  ${sqlString(projectId)},
-  ${sqlString(record.recordFamily)},
-  ${sqlString(record.recordKind)},
-  ${sqlString(record.recordKey)},
-  ${sourceAnchorSql(record.sourceAnchor)},
-  ${sqlString(JSON.stringify(record.sourcePaths))},
-  ${sqlString(JSON.stringify(record.matchKeys))},
-  ${sqlString(record.structuralFingerprint)},
-  ${sqlString(record.fingerprintAlgorithm)},
-  datetime('now')
-) ON CONFLICT(project_id, record_family, record_kind, record_key) DO UPDATE SET
-  source_anchor = excluded.source_anchor,
-  source_paths = excluded.source_paths,
-  match_keys = excluded.match_keys,
-  structural_fingerprint = excluded.structural_fingerprint,
-  fingerprint_algorithm = excluded.fingerprint_algorithm,
-  updated_at = datetime('now');
-`;
-}
-
-function buildPersistedDiscoveryRecords(decisions) {
-  const records = [];
-
-  for (const artifact of decisions.acceptedUtilities) {
-    records.push(persistedDiscoveryRecord('catalog_entry', 'utility_artifact', artifact.artifactKey, utilityArtifactToFindingRecord(artifact), artifact.discoveryFingerprint));
-  }
-  for (const pattern of decisions.acceptedTemplates) {
-    records.push(persistedDiscoveryRecord('catalog_entry', 'template_pattern', pattern.patternKey, templatePatternToFindingRecord(pattern), pattern.discoveryFingerprint));
-  }
-  for (const usage of decisions.acceptedExternalUsages) {
-    records.push(persistedDiscoveryRecord('catalog_entry', 'observed_external_usage', usage.usageKey, externalUsageToFindingRecord(usage), usage.discoveryFingerprint));
-  }
-  for (const ignored of decisions.ignoredCandidates) {
-    records.push(persistedDiscoveryRecord('suppression', ignored.candidateType, ignored.candidateId, traceDecisionToFindingRecord(ignored), ignored.discoveryFingerprint));
-  }
-  for (const deferred of decisions.deferredCandidates) {
-    records.push(persistedDiscoveryRecord('deferral', deferred.candidateType, deferred.candidateId, traceDecisionToFindingRecord(deferred), deferred.discoveryFingerprint));
-  }
-
-  return records;
-}
-
-function cleanupDecisionTraceSql(projectId, decisions) {
-  if (decisions.requiredDecisions.length > 0) {
-    return '';
-  }
-
-  const traceScope = pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope);
-  if (decisions.scope.mode === 'full') {
-    return `
-DELETE FROM ignored_candidates
-WHERE project_id = ${sqlString(projectId)};
-DELETE FROM deferred_candidates
-WHERE project_id = ${sqlString(projectId)};
-DELETE FROM discovery_fingerprints
-WHERE project_id = ${sqlString(projectId)}
-  AND record_family IN ('suppression', 'deferral');
-`;
-  }
-
-  return `
-DELETE FROM ignored_candidates
-WHERE project_id = ${sqlString(projectId)}
-  AND ${traceScope};
-DELETE FROM deferred_candidates
-WHERE project_id = ${sqlString(projectId)}
-  AND ${traceScope};
-DELETE FROM discovery_fingerprints
-WHERE project_id = ${sqlString(projectId)}
-  AND record_family IN ('suppression', 'deferral')
-  AND ${pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope)};
-`;
-}
-
-function deleteArtifactCapabilityTagsSql(projectId, artifactId) {
-  return `
-DELETE FROM entry_capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND (
-    (entry_type = 'artifact' AND entry_id = ${artifactId})
-    OR (entry_type = 'member' AND entry_id IN (
-      SELECT id FROM artifact_members
-      WHERE artifact_id = ${artifactId}
-    ))
-  );
-`;
-}
-
-function deleteTemplateCapabilityTagsSql(projectId, patternId) {
-  return `
-DELETE FROM entry_capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = 'template_pattern'
-  AND entry_id = ${patternId};
-`;
-}
-
-function deleteIgnoredCatalogEntrySql(projectId, candidate) {
-  if (candidate.candidateType === 'utility_artifact') {
-    const artifactId = artifactIdSql(projectId, candidate.artifactKey);
-    return `
-${deleteArtifactCapabilityTagsSql(projectId, artifactId)}
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND artifact_id = ${artifactId};
-DELETE FROM artifacts
-WHERE project_id = ${sqlString(projectId)}
-  AND artifact_key = ${sqlString(candidate.artifactKey)};
-`;
-  }
-  if (candidate.candidateType === 'template_pattern') {
-    const patternId = patternIdSql(projectId, candidate.patternKey);
-    return `
-${deleteTemplateCapabilityTagsSql(projectId, patternId)}
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND pattern_id = ${patternId};
-DELETE FROM template_patterns
-WHERE project_id = ${sqlString(projectId)}
-  AND pattern_key = ${sqlString(candidate.patternKey)};
-`;
-  }
-  if (candidate.candidateType === 'observed_external_usage') {
-    return `
-DELETE FROM observed_external_usages
-WHERE project_id = ${sqlString(projectId)}
-  AND usage_key = ${sqlString(candidate.usageKey)};
-`;
-  }
-
-  return '';
-}
-
-function cleanupCatalogSql(projectId, decisions) {
-  if (decisions.requiredDecisions.length > 0) {
-    return '';
-  }
-
-  const artifactScope = pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope);
-  const artifactScopeOnArtifacts = pathScopeCondition(sourceAnchorPathSql('artifacts.source_anchor'), decisions.scope);
-  const externalScope = pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope);
-  const instanceScope = pathScopeCondition(sourceAnchorPathSql('source_anchor'), decisions.scope);
-  const instanceAnchorText = sourceAnchorTextSql('template_instances.source_anchor');
-  const scopedInstanceAnchorText = sourceAnchorTextSql('scoped_instances.source_anchor');
-  const protectedArtifacts = sqlStringList([...decisions.protectedUtilityKeys]);
-  const protectedTemplates = sqlStringList([...decisions.protectedTemplateKeys]);
-  const protectedUsages = sqlStringList([...decisions.protectedExternalUsageKeys]);
-  const acceptedInstanceAnchors = sqlStringList(decisions.acceptedTemplates.flatMap((pattern) => pattern.instances.map((instance) => JSON.stringify(instance.sourceAnchor))));
-  const artifactKeep = protectedArtifacts ? `AND artifact_key NOT IN (${protectedArtifacts})` : '';
-  const templateKeep = protectedTemplates ? `AND pattern_key NOT IN (${protectedTemplates})` : '';
-  const usageKeep = protectedUsages ? `AND usage_key NOT IN (${protectedUsages})` : '';
-  const artifactFingerprintKeep = protectedArtifacts ? `AND record_key NOT IN (${protectedArtifacts})` : '';
-  const templateFingerprintKeep = protectedTemplates ? `AND record_key NOT IN (${protectedTemplates})` : '';
-  const usageFingerprintKeep = protectedUsages ? `AND record_key NOT IN (${protectedUsages})` : '';
-  const instanceKeep = acceptedInstanceAnchors ? `AND source_anchor NOT IN (${acceptedInstanceAnchors})` : '';
-
-  if (decisions.scope.mode === 'full') {
-    return `
-DELETE FROM entry_capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND (
-    (entry_type = 'artifact' AND entry_id IN (
-      SELECT id FROM artifacts
-      WHERE project_id = ${sqlString(projectId)}
-        ${artifactKeep}
-    ))
-    OR (entry_type = 'member' AND entry_id IN (
-      SELECT artifact_members.id
-      FROM artifact_members
-      JOIN artifacts ON artifacts.id = artifact_members.artifact_id
-      WHERE artifacts.project_id = ${sqlString(projectId)}
-        ${artifactKeep}
-    ))
-  );
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND artifact_id IN (
-    SELECT id FROM artifacts
-    WHERE project_id = ${sqlString(projectId)}
-      ${artifactKeep}
-  );
-DELETE FROM artifacts
-WHERE project_id = ${sqlString(projectId)}
-  ${artifactKeep};
-DELETE FROM entry_capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = 'template_pattern'
-  AND entry_id IN (
-    SELECT id FROM template_patterns
-    WHERE project_id = ${sqlString(projectId)}
-      ${templateKeep}
-  );
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = 'template_pattern'
-  AND pattern_id IN (
-    SELECT id FROM template_patterns
-    WHERE project_id = ${sqlString(projectId)}
-      ${templateKeep}
-  );
-DELETE FROM template_patterns
-WHERE project_id = ${sqlString(projectId)}
-  ${templateKeep};
-DELETE FROM observed_external_usages
-WHERE project_id = ${sqlString(projectId)}
-  ${usageKeep};
-DELETE FROM discovery_fingerprints
-WHERE project_id = ${sqlString(projectId)}
-  AND (
-    (record_family = 'catalog_entry' AND record_kind = 'utility_artifact' ${protectedArtifacts ? `AND record_key NOT IN (${protectedArtifacts})` : ''})
-    OR (record_family = 'catalog_entry' AND record_kind = 'template_pattern' ${protectedTemplates ? `AND record_key NOT IN (${protectedTemplates})` : ''})
-    OR (record_family = 'catalog_entry' AND record_kind = 'observed_external_usage' ${protectedUsages ? `AND record_key NOT IN (${protectedUsages})` : ''})
-  );
-`;
-  }
-
-  return `
-DELETE FROM entry_capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND (
-    (entry_type = 'artifact' AND entry_id IN (
-      SELECT id FROM artifacts
-      WHERE project_id = ${sqlString(projectId)}
-        AND ${artifactScope}
-        ${artifactKeep}
-    ))
-    OR (entry_type = 'member' AND entry_id IN (
-      SELECT artifact_members.id
-      FROM artifact_members
-      JOIN artifacts ON artifacts.id = artifact_members.artifact_id
-      WHERE artifacts.project_id = ${sqlString(projectId)}
-        AND ${artifactScopeOnArtifacts}
-        ${artifactKeep}
-    ))
-  );
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND artifact_id IN (
-    SELECT id FROM artifacts
-    WHERE project_id = ${sqlString(projectId)}
-      AND ${artifactScope}
-      ${artifactKeep}
-  );
-DELETE FROM artifacts
-WHERE project_id = ${sqlString(projectId)}
-  AND ${artifactScope}
-  ${artifactKeep};
-CREATE TEMP TABLE IF NOT EXISTS tool_catalog_changed_template_patterns (
-  pattern_id INTEGER PRIMARY KEY
-);
-DELETE FROM tool_catalog_changed_template_patterns;
-INSERT OR IGNORE INTO tool_catalog_changed_template_patterns (pattern_id)
-SELECT DISTINCT template_instances.pattern_id
-FROM template_instances
-JOIN template_patterns ON template_patterns.id = template_instances.pattern_id
-WHERE template_patterns.project_id = ${sqlString(projectId)}
-  AND ${instanceScope}
-  ${instanceKeep};
-DELETE FROM template_instances
-WHERE pattern_id IN (
-    SELECT pattern_id FROM tool_catalog_changed_template_patterns
-  )
-  AND ${instanceScope}
-  ${instanceKeep};
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = 'template_pattern'
-  AND pattern_id IN (
-    SELECT pattern_id FROM tool_catalog_changed_template_patterns
-  );
-INSERT INTO fts_entries (
-  project_id, entry_type, pattern_id, title, body, source_anchor
-)
-SELECT
-  template_patterns.project_id,
-  'template_pattern',
-  template_patterns.id,
-  template_patterns.name,
-  trim(
-    COALESCE(template_patterns.summary, '')
-    || char(10) || COALESCE(template_patterns.language, '')
-    || char(10) || COALESCE(template_patterns.framework, '')
-    || char(10) || COALESCE(template_patterns.module_path, '')
-    || char(10) || COALESCE((
-      SELECT group_concat(instance_anchor, char(10))
-      FROM (
-        SELECT ${scopedInstanceAnchorText} AS instance_anchor
-        FROM template_instances AS scoped_instances
-        WHERE scoped_instances.pattern_id = template_patterns.id
-        ORDER BY scoped_instances.id
-      )
-    ), '')
-  ),
-  (
-    SELECT ${instanceAnchorText}
-    FROM template_instances
-    WHERE template_instances.pattern_id = template_patterns.id
-    ORDER BY template_instances.id
-    LIMIT 1
-  )
-FROM template_patterns
-WHERE template_patterns.project_id = ${sqlString(projectId)}
-  AND template_patterns.id IN (
-    SELECT pattern_id FROM tool_catalog_changed_template_patterns
-  )
-  AND EXISTS (
-    SELECT 1 FROM template_instances
-    WHERE template_instances.pattern_id = template_patterns.id
-  );
-DELETE FROM fts_entries
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = 'template_pattern'
-  AND pattern_id IN (
-    SELECT id FROM template_patterns
-    WHERE project_id = ${sqlString(projectId)}
-      AND NOT EXISTS (
-        SELECT 1 FROM template_instances
-        WHERE template_instances.pattern_id = template_patterns.id
-      )
-      ${templateKeep}
-  );
-DELETE FROM entry_capability_tags
-WHERE project_id = ${sqlString(projectId)}
-  AND entry_type = 'template_pattern'
-  AND entry_id IN (
-    SELECT id FROM template_patterns
-    WHERE project_id = ${sqlString(projectId)}
-      AND NOT EXISTS (
-        SELECT 1 FROM template_instances
-        WHERE template_instances.pattern_id = template_patterns.id
-      )
-      ${templateKeep}
-  );
-DELETE FROM template_patterns
-WHERE project_id = ${sqlString(projectId)}
-  AND NOT EXISTS (
-    SELECT 1 FROM template_instances
-    WHERE template_instances.pattern_id = template_patterns.id
-  )
-  ${templateKeep};
-DELETE FROM tool_catalog_changed_template_patterns;
-DELETE FROM observed_external_usages
-WHERE project_id = ${sqlString(projectId)}
-  AND ${externalScope}
-  ${usageKeep};
-DELETE FROM discovery_fingerprints
-WHERE project_id = ${sqlString(projectId)}
-  AND record_family = 'catalog_entry'
-  AND (
-    (record_kind = 'utility_artifact' AND ${artifactScope} ${artifactFingerprintKeep})
-    OR (record_kind = 'template_pattern' AND ${instanceScope} ${templateFingerprintKeep})
-    OR (record_kind = 'observed_external_usage' AND ${externalScope} ${usageFingerprintKeep})
-  );
-`;
-}
-
-function buildDiscoveryApplySql(context, decisions) {
-  const statements = [];
-
-  statements.push(cleanupDecisionTraceSql(context.projectId, decisions));
-
-  for (const artifact of decisions.acceptedUtilities) {
-    statements.push(upsertArtifactSql(context.projectId, artifact));
-  }
-  for (const pattern of decisions.acceptedTemplates) {
-    statements.push(upsertTemplateSql(context.projectId, pattern));
-  }
-  for (const usage of decisions.acceptedExternalUsages) {
-    statements.push(upsertExternalUsageSql(context.projectId, usage));
-  }
-  for (const origin of decisions.explicitOriginPriorities) {
-    statements.push(upsertExplicitOriginPrioritySql(context.projectId, origin));
-  }
-  for (const ignored of decisions.ignoredCandidates) {
-    statements.push(deleteIgnoredCatalogEntrySql(context.projectId, ignored));
-    statements.push(ignoredCandidateSql(context.projectId, ignored));
-  }
-  for (const deferred of decisions.deferredCandidates) {
-    statements.push(deferredCandidateSql(context.projectId, deferred));
-  }
-  statements.push(cleanupCatalogSql(context.projectId, decisions));
-  for (const record of buildPersistedDiscoveryRecords(decisions)) {
-    statements.push(discoveryFingerprintSql(context.projectId, record));
-  }
-
-  return statements.filter((statement) => statement.trim()).join('\n');
-}
-
-function getCatalogCounts(context) {
-  const rows = runSqliteJson(context.dbPath, `
-SELECT
-  (SELECT COUNT(*) FROM utility_origins WHERE project_id = ${sqlString(context.projectId)}) AS utility_origins,
-  (SELECT COUNT(*) FROM origin_priorities WHERE project_id = ${sqlString(context.projectId)}) AS origin_priorities,
-  (SELECT COUNT(*) FROM artifacts WHERE project_id = ${sqlString(context.projectId)}) AS artifacts,
-  (SELECT COUNT(*) FROM artifact_members
-    JOIN artifacts ON artifacts.id = artifact_members.artifact_id
-    WHERE artifacts.project_id = ${sqlString(context.projectId)}) AS artifact_members,
-  (SELECT COUNT(*) FROM member_signatures
-    JOIN artifact_members ON artifact_members.id = member_signatures.member_id
-    JOIN artifacts ON artifacts.id = artifact_members.artifact_id
-    WHERE artifacts.project_id = ${sqlString(context.projectId)}) AS member_signatures,
-  (SELECT COUNT(*) FROM capability_tags WHERE project_id = ${sqlString(context.projectId)}) AS capability_tags,
-  (SELECT COUNT(*) FROM entry_capability_tags WHERE project_id = ${sqlString(context.projectId)}) AS entry_capability_tags,
-  (SELECT COUNT(*) FROM template_patterns WHERE project_id = ${sqlString(context.projectId)}) AS template_patterns,
-  (SELECT COUNT(*) FROM template_instances
-    JOIN template_patterns ON template_patterns.id = template_instances.pattern_id
-    WHERE template_patterns.project_id = ${sqlString(context.projectId)}) AS template_instances,
-  (SELECT COUNT(*) FROM observed_external_usages WHERE project_id = ${sqlString(context.projectId)}) AS observed_external_usages,
-  (SELECT COUNT(*) FROM ignored_candidates WHERE project_id = ${sqlString(context.projectId)}) AS ignored_candidates,
-  (SELECT COUNT(*) FROM deferred_candidates WHERE project_id = ${sqlString(context.projectId)}) AS deferred_candidates,
-  (SELECT COUNT(*) FROM fts_entries WHERE project_id = ${sqlString(context.projectId)}) AS fts_entries;
-`);
-
-  return rows[0] ?? {};
-}
-
-function emptyCatalogCounts() {
-  return Object.fromEntries(CATALOG_COUNT_KEYS.map((key) => [key, 0]));
-}
-
-function getCatalogCountsIfPresent(context) {
-  if (!fs.existsSync(context.dbPath) || getSchemaVersion(context.dbPath) < MIN_CONSULT_SCHEMA_VERSION) {
-    return emptyCatalogCounts();
-  }
-
-  return getCatalogCounts(context);
-}
-
-function diffCatalogCounts(before, after) {
-  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
-  const diff = {};
-  for (const key of keys) {
-    diff[key] = Number(after[key] ?? 0) - Number(before[key] ?? 0);
-  }
-
-  return diff;
-}
-
-function collectDecisionRisks(decisions) {
-  const risks = new Set();
-  for (const artifact of decisions.acceptedUtilities) {
-    if (artifact.framework === null) {
-      risks.add(`Utility artifact ${artifact.artifactKey} has no detected framework metadata.`);
-    }
-  }
-  if (decisions.requiredDecisions.length > 0) {
-    risks.add('Index update was skipped because unresolved decisions remain; resolve every Finding before re-running apply.');
-  }
-  if (risks.size === 0) {
-    risks.add('Line numbers are stored as hints and should be verified against source when used.');
-  }
-
-  return [...risks];
-}
-
-function buildApplySummary(context, decisions, beforeCounts, afterCounts, indexMutated = true) {
-  const changedPaths = decisions.scope.changedPaths.map((item) => ({
-    path: item.path,
-    is_directory: item.isDirectory,
-  }));
-
-  return {
-    kind: 'tool_catalog_discovery_apply',
-    version: 1,
-    applied_at: new Date().toISOString(),
-    index_mutated: indexMutated,
-    project: projectContextToOutput(context),
-    scan: {
-      mode: decisions.scope.mode,
-      changed_paths: changedPaths,
-      language_filters: decisions.scope.languageFilters,
-      include_filters: decisions.scope.includeFilters,
-      exclude_filters: decisions.scope.excludeFilters,
-    },
-    decisions: {
-      accepted_utility_artifacts: decisions.acceptedUtilities.length,
-      accepted_artifact_members: decisions.acceptedUtilities.reduce((count, artifact) => count + artifact.members.length, 0),
-      accepted_template_patterns: decisions.acceptedTemplates.length,
-      accepted_template_instances: decisions.acceptedTemplates.reduce((count, pattern) => count + pattern.instances.length, 0),
-      accepted_observed_external_usages: decisions.acceptedExternalUsages.length,
-      suppressions: decisions.ignoredCandidates.length,
-      deferrals: decisions.deferredCandidates.length,
-      required_decisions: decisions.requiredDecisions,
-      explicit_origin_priorities: decisions.explicitOriginPriorities.length,
-    },
-    cleanup: {
-      applied: indexMutated && decisions.requiredDecisions.length === 0,
-      scope: decisions.scope.mode,
-      changed_paths: changedPaths,
-      skipped_reason: decisions.requiredDecisions.length > 0 ? 'unresolved-decisions' : null,
-    },
-    counts: {
-      before: beforeCounts,
-      after: afterCounts,
-      delta: diffCatalogCounts(beforeCounts, afterCounts),
-    },
-    risks: collectDecisionRisks(decisions),
-    follow_up_commands: [
-      `tool-catalog config info --root ${context.rootPath}`,
-      decisions.scope.mode === 'changed'
-        ? `tool-catalog discover --changed ${changedPaths.map((item) => item.path).join(' ')} --dry-run --root ${context.rootPath}`
-        : `tool-catalog discover --full --dry-run --root ${context.rootPath}`,
-    ],
-  };
-}
-
-function renderCountDelta(delta) {
-  return Object.entries(delta)
-    .map(([key, value]) => `- ${key}: ${value >= 0 ? '+' : ''}${value}`)
-    .join('\n');
-}
-
-function renderDiscoveryApplyMarkdown(summary) {
-  const required = summary.decisions.required_decisions;
-  const lines = [
-    '# Tool Catalog Discovery Apply',
-    '',
-    `Project: \`${summary.project.project_id}\``,
-    `Root: \`${summary.project.root_path}\``,
-    `Index: \`${summary.project.catalog_path}\``,
-    `Mode: \`${summary.scan.mode}\``,
-    `Index mutated: \`${summary.index_mutated}\``,
-    '',
-    '## Changed Counts',
-    renderCountDelta(summary.counts.delta),
-    '',
-    '## Applied Decisions',
-    `- Utility artifacts: ${summary.decisions.accepted_utility_artifacts}`,
-    `- Artifact members: ${summary.decisions.accepted_artifact_members}`,
-    `- Template patterns: ${summary.decisions.accepted_template_patterns}`,
-    `- Template instances: ${summary.decisions.accepted_template_instances}`,
-    `- Observed external usages: ${summary.decisions.accepted_observed_external_usages}`,
-    `- Suppressions: ${summary.decisions.suppressions}`,
-    `- Deferrals: ${summary.decisions.deferrals}`,
-    `- Origin priorities: ${summary.decisions.explicit_origin_priorities}`,
-    '',
-    '## Required Decisions',
-  ];
-
-  if (required.length === 0) {
-    lines.push('- None.');
-  } else {
-    for (const decision of required.slice(0, 20)) {
-      lines.push(`- \`${decision.finding_id}\` (${decision.finding_type}): ${decision.reason}`);
-    }
-    if (required.length > 20) {
-      lines.push(`- ${required.length - 20} more required decisions omitted from Markdown summary.`);
-    }
-  }
-
-  lines.push('', '## Cleanup');
-  lines.push(`- Applied: \`${summary.cleanup.applied}\``);
-  lines.push(`- Scope: \`${summary.cleanup.scope}\``);
-  if (summary.cleanup.skipped_reason) {
-    lines.push(`- Skipped reason: \`${summary.cleanup.skipped_reason}\``);
-  }
-
-  lines.push('', '## Risks');
-  for (const risk of summary.risks) {
-    lines.push(`- ${risk}`);
-  }
-
-  lines.push('', '## Follow-up Commands');
-  for (const command of summary.follow_up_commands) {
-    lines.push(`- \`${command}\``);
-  }
-
-  return `${lines.join('\n')}\n`;
-}
-
-function printDiscoveryApplySummary(summary, options) {
-  if (options.json) {
-    process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
-    return;
-  }
-
-  process.stdout.write(renderDiscoveryApplyMarkdown(summary));
-}
-
-function applyDiscoveryDecisions(context, decisions) {
-  if (decisions.requiredDecisions.length > 0) {
-    const counts = getCatalogCountsIfPresent(context);
-    return buildApplySummary(context, decisions, counts, counts, false);
-  }
-
-  return withProjectApplyLock(context, () => {
-    applyMigrations(context.dbPath);
-    upsertProjectRecord(context);
-    const beforeCounts = getCatalogCounts(context);
-    const sql = buildDiscoveryApplySql(context, decisions);
-    if (sql.trim()) {
-      runSqlite(context.dbPath, transactionSql(sql));
-    }
-    const afterCounts = getCatalogCounts(context);
-    return buildApplySummary(context, decisions, beforeCounts, afterCounts);
-  });
-}
-
-function createConsultContext(options) {
-  const catalogHome = getCatalogHome();
-  const config = readUserConfig(catalogHome);
-  return createProjectContext(options, config);
-}
-
 function getReadOnlySchemaVersion(dbPath) {
   if (!fs.existsSync(dbPath)) {
     return 0;
   }
-
-  const metadataTables = runSqliteReadOnlyJson(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'metadata';");
-  if (metadataTables.length === 0) {
+  try {
+    const tables = runSqliteJson(dbPath, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'metadata';", { readOnly: true });
+    if (tables.length === 0) {
+      return 0;
+    }
+    const rows = runSqliteJson(dbPath, "SELECT value FROM metadata WHERE key = 'schema_version';", { readOnly: true });
+    return Number.parseInt(rows[0]?.value ?? '0', 10) || 0;
+  } catch {
     return 0;
   }
-
-  const rows = runSqliteReadOnlyJson(dbPath, "SELECT value FROM metadata WHERE key = 'schema_version';");
-  const version = Number.parseInt(rows[0]?.value ?? '0', 10);
-  return Number.isNaN(version) ? 0 : version;
 }
 
 function consultIndexState(context) {
@@ -5150,143 +642,97 @@ function consultIndexState(context) {
   return {
     exists,
     schemaVersion,
-    readable: exists && schemaVersion >= MIN_CONSULT_SCHEMA_VERSION,
-    reason: exists ? (schemaVersion >= MIN_CONSULT_SCHEMA_VERSION ? null : 'schema-too-old') : 'missing-index',
+    readable: exists && schemaVersion >= SCHEMA_VERSION,
+    reason: exists ? (schemaVersion >= SCHEMA_VERSION ? null : 'schema-too-old') : 'missing-index',
   };
 }
 
-function buildUnavailableIndexOutput(kind, context, state) {
-  return {
-    kind,
-    version: 1,
-    project: projectContextToOutput(context),
-    index: {
-      status: state.reason,
-      schema_version: state.schemaVersion,
-      readable: false,
-    },
-    results: [],
-    warnings: [
-      state.reason === 'missing-index'
-        ? 'No project index exists for this project id. Run discovery before consulting.'
-        : 'The project index schema is too old for consulting commands. Run discovery apply to migrate it.',
-    ],
-  };
-}
-
-function buildUnavailableTagsOutput(context, state) {
-  const output = buildUnavailableIndexOutput('tool_catalog_tags', context, state);
-  return {
-    ...output,
-    generated_at: new Date().toISOString(),
-    index_mutated: false,
-    tags: [],
-    results: undefined,
-  };
-}
-
-function capabilityTagVocabularyEntry(tag) {
-  return CAPABILITY_TAG_VOCABULARY.get(tag) ?? null;
-}
-
-function loadCapabilityTagVocabulary(context) {
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  capability_tags.tag,
-  capability_tags.description,
-  COUNT(DISTINCT entry_capability_tags.entry_type || ':' || entry_capability_tags.entry_id) AS entry_count
-FROM capability_tags
-LEFT JOIN entry_capability_tags
-  ON entry_capability_tags.project_id = capability_tags.project_id
-  AND entry_capability_tags.tag_id = capability_tags.id
-WHERE capability_tags.project_id = ${sqlString(context.projectId)}
-GROUP BY capability_tags.id, capability_tags.tag, capability_tags.description
-ORDER BY capability_tags.tag;
-`).map((row) => {
-    const vocabulary = capabilityTagVocabularyEntry(row.tag);
-    return {
-      tag: row.tag,
-      description: normalizeNullableString(row.description)
-        ?? vocabulary?.description
-        ?? 'Capability tag stored without a project-specific description.',
-      aliases: [...(vocabulary?.aliases ?? [])],
-      entry_count: Number(row.entry_count ?? 0),
-    };
-  });
-}
-
-function buildTagsOutput(context, state) {
-  if (!state.readable) {
-    return buildUnavailableTagsOutput(context, state);
-  }
-
-  return {
-    kind: 'tool_catalog_tags',
-    version: 1,
-    generated_at: new Date().toISOString(),
-    index_mutated: false,
-    project: projectContextToOutput(context),
-    tags: loadCapabilityTagVocabulary(context),
-    warnings: [],
-  };
-}
-
-function renderTagsMarkdown(output) {
-  const lines = [
-    '# Tool Catalog tags',
-    '',
-    `Project: \`${output.project.project_id}\``,
-    `Root: \`${output.project.root_path}\``,
-    `Index mutated: \`${output.index_mutated ?? false}\``,
-    '',
-    '## Tags',
-  ];
-
-  if (output.tags.length === 0) {
-    lines.push('- None.');
-  } else {
-    for (const entry of output.tags) {
-      lines.push(`- \`${entry.tag}\` (${entry.entry_count} entries)`);
-      lines.push(`  Description: ${entry.description}`);
-      if (entry.aliases.length > 0) {
-        lines.push(`  Aliases: ${entry.aliases.map((alias) => `\`${alias}\``).join(', ')}`);
-      }
+function acquireProjectApplyLock(context) {
+  fs.mkdirSync(context.projectDir, { recursive: true });
+  let descriptor;
+  try {
+    descriptor = fs.openSync(context.lockPath, 'wx', 0o600);
+    fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, project_id: context.projectId, created_at: new Date().toISOString() }));
+    return { descriptor, path: context.lockPath };
+  } catch (error) {
+    if (error.code === 'EEXIST') {
+      throw new ToolCatalogError(`Another discovery apply is already running for project '${context.projectId}'.`);
     }
+    throw error;
   }
+}
 
-  if (output.warnings.length > 0) {
-    lines.push('', '## Notes');
-    for (const warning of output.warnings) {
-      lines.push(`- ${warning}`);
-    }
+function withProjectApplyLock(context, callback) {
+  const lock = acquireProjectApplyLock(context);
+  try {
+    return callback();
+  } finally {
+    fs.closeSync(lock.descriptor);
+    fs.rmSync(lock.path, { force: true });
   }
-
-  return `${lines.join('\n')}\n`;
 }
 
-function printTagsOutput(output, options) {
-  if (options.json) {
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+function runProjectApplyTransaction(context, sql) {
+  return withProjectApplyLock(context, () => runSqlite(context.dbPath, transactionSql(sql)));
+}
+
+function normalizeNullableString(value) {
+  if (value === null || value === undefined) {
+    return null;
   }
-
-  process.stdout.write(renderTagsMarkdown(output));
+  const normalized = String(value).trim();
+  return normalized || null;
 }
 
-function sqlLimit(value) {
-  return sqlInteger(Math.min(Math.max(Number.parseInt(value, 10) || DEFAULT_QUERY_LIMIT, 1), 200));
+function requiredString(value, fieldName, maxLength = MAX_PROSE_CHARS) {
+  const normalized = normalizeNullableString(value);
+  if (!normalized) {
+    throw new ToolCatalogError(`${fieldName} is required.`, 2);
+  }
+  if (normalized.length > maxLength) {
+    throw new ToolCatalogError(`${fieldName} must be at most ${maxLength} characters.`, 2);
+  }
+  return normalized;
 }
 
-function goalTerms(goal) {
-  return [...new Set(String(goal)
-    .toLowerCase()
-    .match(/[a-z0-9_]+/g) ?? [])]
-    .filter((term) => term.length >= 2)
-    .slice(0, 12);
+function optionalString(value, fieldName, maxLength = MAX_PROSE_CHARS) {
+  const normalized = normalizeNullableString(value);
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.length > maxLength) {
+    throw new ToolCatalogError(`${fieldName} must be at most ${maxLength} characters.`, 2);
+  }
+  return normalized;
 }
 
-function ftsQueryFromTerms(terms) {
-  return terms.map((term) => `${term.replace(/"/g, '""')}*`).join(' OR ');
+function requiredInteger(value, fieldName) {
+  const integer = Number.parseInt(value, 10);
+  if (!Number.isFinite(integer)) {
+    throw new ToolCatalogError(`${fieldName} must be an integer.`, 2);
+  }
+  return integer;
+}
+
+function requiredNonNegativeInteger(value, fieldName) {
+  const integer = requiredInteger(value, fieldName);
+  if (integer < 0) {
+    throw new ToolCatalogError(`${fieldName} must be zero or greater.`, 2);
+  }
+  return integer;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeRelativePath(value, fieldName) {
+  const raw = requiredString(value, fieldName, 500);
+  const normalized = raw.replace(/\\/g, '/').replace(/^\.\/+/, '');
+  if (path.isAbsolute(raw) || normalized === '..' || normalized.startsWith('../')) {
+    throw new ToolCatalogError(`${fieldName} must be a target-project-relative path.`, 2);
+  }
+  return normalized;
 }
 
 function normalizeCurrentFile(rootPath, currentFile) {
@@ -5294,583 +740,692 @@ function normalizeCurrentFile(rootPath, currentFile) {
   if (!value) {
     return null;
   }
-
-  const absolutePath = path.isAbsolute(value)
-    ? normalizePath(value)
-    : normalizePath(path.resolve(rootPath, value));
-  if (!isInsideRoot(rootPath, absolutePath)) {
+  const absolutePath = path.isAbsolute(value) ? normalizePath(value) : normalizePath(path.resolve(rootPath, value));
+  const relative = path.relative(rootPath, absolutePath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new ToolCatalogError(`Current file is outside the target project root: ${currentFile}`, 2);
   }
-
-  return getRelativePath(rootPath, absolutePath);
+  return relative.replace(/\\/g, '/');
 }
 
-function moduleProximityScore(currentFile, modulePath) {
-  if (!currentFile || !modulePath) {
-    return 0;
+function normalizeCapabilityTags(value, fieldName) {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ToolCatalogError(`${fieldName} must be a non-empty array.`, 2);
   }
-
-  const currentModule = getModulePath(currentFile);
-  if (!currentModule) {
-    return 0;
-  }
-  if (currentModule === modulePath) {
-    return 3;
-  }
-
-  const currentFirst = currentModule.split('/')[0];
-  const moduleFirst = modulePath.split('/')[0];
-  return currentFirst && currentFirst === moduleFirst ? 1 : 0;
+  return [...new Set(value.map((item) => normalizeTagValue(item, fieldName)))];
 }
 
-function parseStoredSourceAnchor(value) {
-  const text = normalizeNullableString(value);
-  if (!text) {
-    return null;
+function assertNoFields(object, fieldNames, label) {
+  for (const fieldName of fieldNames) {
+    if (Object.hasOwn(object, fieldName)) {
+      throw new ToolCatalogError(`${label} must not include '${fieldName}'.`, 2);
+    }
+  }
+}
+
+function normalizeSelector(selector, prefix, fieldName) {
+  const value = requiredString(selector, fieldName, 500);
+  if (!value.startsWith(`${prefix}:`)) {
+    throw new ToolCatalogError(`${fieldName} must use '${prefix}:' prefix.`, 2);
+  }
+  if (value.length === `${prefix}:`.length) {
+    throw new ToolCatalogError(`${fieldName} must include an identifier after '${prefix}:'.`, 2);
+  }
+  return value;
+}
+
+function normalizeSourceAnchor(value, expectedSelector, fieldName) {
+  if (!isPlainObject(value)) {
+    throw new ToolCatalogError(`${fieldName} must be an object with path, symbol, and optional line.`, 2);
+  }
+  const line = value.line === undefined || value.line === null ? null : requiredInteger(value.line, `${fieldName}.line`);
+  if (line !== null && line < 1) {
+    throw new ToolCatalogError(`${fieldName}.line must be a positive integer.`, 2);
+  }
+  const anchor = {
+    path: normalizeRelativePath(value.path, `${fieldName}.path`),
+    symbol: requiredString(value.symbol, `${fieldName}.symbol`, 500),
+  };
+  if (line !== null) {
+    anchor.line = line;
+  }
+  if (anchor.symbol !== expectedSelector.slice('artifact:'.length)) {
+    throw new ToolCatalogError(`${fieldName}.symbol must match the artifact selector identity.`, 2);
+  }
+  return anchor;
+}
+
+function normalizeProject(value) {
+  if (!isPlainObject(value)) {
+    throw new ToolCatalogError('project must be an object.', 2);
+  }
+  const mode = requiredString(value.mode, 'project.mode');
+  if (mode !== 'full' && mode !== 'changed') {
+    throw new ToolCatalogError("project.mode must be 'full' or 'changed'.", 2);
+  }
+  return { mode };
+}
+
+function normalizeRemoved(value) {
+  if (!isPlainObject(value)) {
+    throw new ToolCatalogError('removed must be an object.', 2);
+  }
+  const groups = ['artifacts', 'external_selectors', 'origins', 'suppressions', 'fingerprints'];
+  const removed = {};
+  for (const group of groups) {
+    if (!Array.isArray(value[group])) {
+      throw new ToolCatalogError(`removed.${group} must be an array.`, 2);
+    }
+    removed[group] = [...new Set(value[group].map((item) => requiredString(item, `removed.${group}[]`, 500)))];
+  }
+  for (const key of Object.keys(value)) {
+    if (!groups.includes(key)) {
+      throw new ToolCatalogError(`removed contains unsupported key '${key}'.`, 2);
+    }
+  }
+  return removed;
+}
+
+function normalizeArtifact(raw, index) {
+  if (!isPlainObject(raw)) {
+    throw new ToolCatalogError(`artifacts[${index}] must be an object.`, 2);
+  }
+  const selector = normalizeSelector(raw.selector, 'artifact', `artifacts[${index}].selector`);
+  return {
+    selector,
+    language: requiredString(raw.language, `artifacts[${index}].language`, 80).toLowerCase(),
+    artifactType: requiredString(raw.artifact_type, `artifacts[${index}].artifact_type`, 80).toLowerCase(),
+    framework: optionalString(raw.framework, `artifacts[${index}].framework`, 80)?.toLowerCase() ?? null,
+    modulePath: raw.module_path === undefined ? null : normalizeRelativePath(raw.module_path, `artifacts[${index}].module_path`),
+    summary: requiredString(raw.summary, `artifacts[${index}].summary`),
+    usageNotes: optionalString(raw.usage_notes, `artifacts[${index}].usage_notes`),
+    limitations: optionalString(raw.limitations, `artifacts[${index}].limitations`),
+    sourceAnchor: normalizeSourceAnchor(raw.source_anchor, selector, `artifacts[${index}].source_anchor`),
+    priority: requiredInteger(raw.priority, `artifacts[${index}].priority`),
+    capabilityTags: normalizeCapabilityTags(raw.capability_tags, `artifacts[${index}].capability_tags`),
+  };
+}
+
+function normalizeExternalSelector(raw, index) {
+  if (!isPlainObject(raw)) {
+    throw new ToolCatalogError(`external_selectors[${index}] must be an object.`, 2);
+  }
+  assertNoFields(raw, ['source_anchor', 'priority', 'artifact_type', 'module_path'], `external_selectors[${index}]`);
+  return {
+    selector: normalizeSelector(raw.selector, 'external', `external_selectors[${index}].selector`),
+    originKey: requiredString(raw.origin_key, `external_selectors[${index}].origin_key`, 500),
+    language: requiredString(raw.language, `external_selectors[${index}].language`, 80).toLowerCase(),
+    framework: optionalString(raw.framework, `external_selectors[${index}].framework`, 80)?.toLowerCase() ?? null,
+    summary: requiredString(raw.summary, `external_selectors[${index}].summary`),
+    usageNotes: optionalString(raw.usage_notes, `external_selectors[${index}].usage_notes`),
+    limitations: optionalString(raw.limitations, `external_selectors[${index}].limitations`),
+    capabilityTags: normalizeCapabilityTags(raw.capability_tags, `external_selectors[${index}].capability_tags`),
+  };
+}
+
+function normalizeOrigin(raw, index) {
+  if (!isPlainObject(raw)) {
+    throw new ToolCatalogError(`origins[${index}] must be an object.`, 2);
+  }
+  return {
+    originKey: requiredString(raw.origin_key, `origins[${index}].origin_key`, 500),
+    originType: requiredString(raw.origin_type, `origins[${index}].origin_type`, 80),
+    displayName: requiredString(raw.display_name, `origins[${index}].display_name`, 500),
+    usageCount: requiredNonNegativeInteger(raw.usage_count, `origins[${index}].usage_count`),
+    priority: requiredInteger(raw.priority, `origins[${index}].priority`),
+  };
+}
+
+function normalizeTargetKind(value, fieldName) {
+  const targetKind = requiredString(value, fieldName);
+  if (!['artifact', 'external_selector', 'origin'].includes(targetKind)) {
+    throw new ToolCatalogError(`${fieldName} must be artifact, external_selector, or origin.`, 2);
+  }
+  return targetKind;
+}
+
+function normalizeSuppression(raw, index) {
+  if (!isPlainObject(raw)) {
+    throw new ToolCatalogError(`suppressions[${index}] must be an object.`, 2);
+  }
+  assertNoFields(raw, ['summary', 'usage_notes', 'limitations', 'capability_tags'], `suppressions[${index}]`);
+  return {
+    suppressionKey: requiredString(raw.suppression_key, `suppressions[${index}].suppression_key`, 500),
+    targetKind: normalizeTargetKind(raw.target_kind, `suppressions[${index}].target_kind`),
+    targetKey: requiredString(raw.target_key, `suppressions[${index}].target_key`, 500),
+    reason: requiredString(raw.reason, `suppressions[${index}].reason`),
+    fingerprintKey: requiredString(raw.fingerprint_key, `suppressions[${index}].fingerprint_key`, 500),
+  };
+}
+
+function normalizeFingerprint(raw, index) {
+  if (!isPlainObject(raw)) {
+    throw new ToolCatalogError(`fingerprints[${index}] must be an object.`, 2);
+  }
+  return {
+    fingerprintKey: requiredString(raw.fingerprint_key, `fingerprints[${index}].fingerprint_key`, 500),
+    targetKind: normalizeTargetKind(raw.target_kind, `fingerprints[${index}].target_kind`),
+    targetKey: requiredString(raw.target_key, `fingerprints[${index}].target_key`, 500),
+    fingerprint: requiredString(raw.fingerprint, `fingerprints[${index}].fingerprint`, 2000),
+  };
+}
+
+function normalizeDecisionFile(input) {
+  if (!isPlainObject(input)) {
+    throw new ToolCatalogError('Discovery Decision File must be a JSON object.', 2);
+  }
+  const keys = ['project', 'artifacts', 'external_selectors', 'origins', 'suppressions', 'fingerprints', 'removed'];
+  for (const key of keys) {
+    if (!Object.hasOwn(input, key)) {
+      throw new ToolCatalogError(`Discovery Decision File missing top-level key '${key}'.`, 2);
+    }
+  }
+  for (const key of Object.keys(input)) {
+    if (!keys.includes(key)) {
+      throw new ToolCatalogError(`Discovery Decision File contains unsupported top-level key '${key}'.`, 2);
+    }
+  }
+  for (const arrayKey of ['artifacts', 'external_selectors', 'origins', 'suppressions', 'fingerprints']) {
+    if (!Array.isArray(input[arrayKey])) {
+      throw new ToolCatalogError(`${arrayKey} must be an array.`, 2);
+    }
   }
 
+  return {
+    project: normalizeProject(input.project),
+    artifacts: input.artifacts.map(normalizeArtifact),
+    externalSelectors: input.external_selectors.map(normalizeExternalSelector),
+    origins: input.origins.map(normalizeOrigin),
+    suppressions: input.suppressions.map(normalizeSuppression),
+    fingerprints: input.fingerprints.map(normalizeFingerprint),
+    removed: normalizeRemoved(input.removed),
+  };
+}
+
+function readJsonFile(filePath) {
+  const resolvedPath = path.resolve(expandHome(filePath));
   try {
-    const parsed = JSON.parse(text);
-    if (isPlainObject(parsed)) {
-      const relativePath = normalizeNullableString(parsed.path);
-      const line = Number.parseInt(parsed.line ?? parsed.line_hint ?? 1, 10);
-      const symbol = normalizeNullableString(parsed.symbol ?? parsed.symbol_identity);
-      if (relativePath && Number.isFinite(line) && line > 0) {
-        return {
-          path: normalizeRelativePath(relativePath),
-          line,
-          symbol,
-          text: `${normalizeRelativePath(relativePath)}:${line}${symbol ? `#${symbol}` : ''}`,
-        };
-      }
-    }
-  } catch {
-    const parsed = parseSourceAnchorText(text);
-    if (parsed) {
-      return {
-        path: normalizeRelativePath(parsed.path),
-        line: parsed.line,
-        symbol: parsed.symbol,
-        text: `${normalizeRelativePath(parsed.path)}:${parsed.line}${parsed.symbol ? `#${parsed.symbol}` : ''}`,
-      };
-    }
+    return JSON.parse(fs.readFileSync(resolvedPath, 'utf8'));
+  } catch (error) {
+    throw new ToolCatalogError(`Unable to read JSON file ${resolvedPath}: ${error.message}`, 2);
   }
-
-  return {
-    path: text,
-    line: 1,
-    symbol: null,
-    text,
-    invalid: true,
-  };
 }
 
-function anchorToOutput(anchor) {
-  if (!anchor) {
-    return null;
-  }
-
-  return {
-    path: anchor.path,
-    line: anchor.line,
-    symbol: anchor.symbol,
-    text: anchor.text,
-    invalid: Boolean(anchor.invalid),
-  };
-}
-
-function compactSnippet(value, maxLength = 140) {
-  return truncateText(String(value ?? '').replace(/\s+/g, ' ').trim(), maxLength);
-}
-
-function lowerSet(values) {
-  return new Set(values.map((value) => String(value).toLowerCase()));
-}
-
-function entryHasAllTagsSql(projectId, entryType, entryIdSql, tags) {
-  if (tags.length === 0) {
-    return '1 = 1';
-  }
-
-  return tags.map((tag) => `
-EXISTS (
-  SELECT 1
-  FROM entry_capability_tags
-  JOIN capability_tags ON capability_tags.id = entry_capability_tags.tag_id
-  WHERE entry_capability_tags.project_id = ${sqlString(projectId)}
-    AND entry_capability_tags.entry_type = ${sqlString(entryType)}
-    AND entry_capability_tags.entry_id = ${entryIdSql}
-    AND capability_tags.project_id = entry_capability_tags.project_id
-    AND capability_tags.tag = ${sqlString(tag)}
-)`).join(' AND ');
-}
-
-function queryTagFilterSql(projectId, tags) {
-  if (tags.length === 0) {
-    return '';
-  }
-
+function tagInsertSql(projectId, tag) {
   return `
-  AND (
-    (fts_entries.entry_type = 'artifact' AND ${entryHasAllTagsSql(projectId, 'artifact', 'artifacts.id', tags)})
-    OR (fts_entries.entry_type = 'member' AND ${entryHasAllTagsSql(projectId, 'member', 'artifact_members.id', tags)})
-    OR (fts_entries.entry_type = 'template_pattern' AND ${entryHasAllTagsSql(projectId, 'template_pattern', 'template_patterns.id', tags)})
-  )`;
+INSERT INTO capability_tags (project_id, tag, updated_at)
+VALUES (${sqlString(projectId)}, ${sqlString(tag)}, datetime('now'))
+ON CONFLICT(project_id, tag) DO UPDATE SET updated_at = datetime('now');
+`;
 }
 
-function resultTypeAliases(result) {
-  const aliases = new Set([result.kind]);
-  if (result.kind === 'artifact') {
-    aliases.add('utility_artifact');
-    aliases.add(result.artifact_type);
-  } else if (result.kind === 'member') {
-    aliases.add('artifact_member');
-    aliases.add(result.member_type);
-    aliases.add(result.artifact_type);
-  } else if (result.kind === 'template_pattern') {
-    aliases.add('template');
-    aliases.add('template_pattern');
-  } else if (result.kind === 'external_usage') {
-    aliases.add('external');
-    aliases.add('external_usage');
-    aliases.add('observed_external_usage');
+function resetEntryTagsSql(projectId, entryType, entryIdSql, tags) {
+  const statements = [`DELETE FROM entry_capability_tags WHERE project_id = ${sqlString(projectId)} AND entry_type = ${sqlString(entryType)} AND entry_id = ${entryIdSql};`];
+  for (const tag of tags) {
+    statements.push(tagInsertSql(projectId, tag));
+    statements.push(`
+INSERT INTO entry_capability_tags (project_id, entry_type, entry_id, tag_id)
+VALUES (${sqlString(projectId)}, ${sqlString(entryType)}, ${entryIdSql}, (SELECT id FROM capability_tags WHERE project_id = ${sqlString(projectId)} AND tag = ${sqlString(tag)}))
+ON CONFLICT(project_id, entry_type, entry_id, tag_id) DO NOTHING;
+`);
   }
-
-  return [...aliases].filter(Boolean).map((item) => String(item).toLowerCase());
+  return statements.join('\n');
 }
 
-function passesQueryFilters(result, queryOptions) {
-  const languages = lowerSet(queryOptions.languages);
-  const frameworks = lowerSet(queryOptions.frameworks);
-  const artifactTypes = lowerSet(queryOptions.artifactTypes);
-
-  if (languages.size > 0 && !languages.has(String(result.language ?? '').toLowerCase())) {
-    return false;
-  }
-  if (frameworks.size > 0 && !frameworks.has(String(result.framework ?? '').toLowerCase())) {
-    return false;
-  }
-  if (artifactTypes.size > 0 && !resultTypeAliases(result).some((item) => artifactTypes.has(item))) {
-    return false;
-  }
-
-  return true;
+function artifactIdSql(projectId, selector) {
+  return `(SELECT id FROM artifacts WHERE project_id = ${sqlString(projectId)} AND selector = ${sqlString(selector)})`;
 }
 
-function compactQueryMatch(result) {
-  return {
-    kind: result.kind,
-    selector: result.selector,
-    title: result.title,
-    signature: result.signature,
-    signatures: result.signatures,
-    source_anchor: result.source_anchor,
-    summary: result.summary,
-    snippet: result.snippet,
-  };
+function externalSelectorIdSql(projectId, selector) {
+  return `(SELECT id FROM external_selectors WHERE project_id = ${sqlString(projectId)} AND selector = ${sqlString(selector)})`;
 }
 
-function createArtifactQueryGroup(result) {
-  return {
-    kind: 'artifact',
-    selector: `artifact:${result.artifact_key}`,
-    identifier: result.artifact_key,
-    title: result.artifact_name ?? result.title,
-    artifact_type: result.artifact_type,
-    language: result.language,
-    framework: result.framework,
-    module_path: result.module_path,
-    source_anchor: result.artifact_source_anchor ?? result.source_anchor,
-    summary: result.artifact_summary ?? result.summary,
-    origin_type: result.origin_type,
-    origin_key: result.origin_key,
-    origin_display_name: result.origin_display_name,
-    origin_priority: result.origin_priority,
-    origin_priority_reason: result.origin_priority_reason,
-    matched_by: result.kind,
-    best_match: compactQueryMatch(result),
-    matching_members: [],
-    member_match_count: 0,
-  };
+function upsertOriginSql(projectId, origin) {
+  return `
+INSERT INTO utility_origins (project_id, origin_key, origin_type, display_name, usage_count, priority, updated_at)
+VALUES (${sqlString(projectId)}, ${sqlString(origin.originKey)}, ${sqlString(origin.originType)}, ${sqlString(origin.displayName)}, ${sqlInteger(origin.usageCount)}, ${sqlInteger(origin.priority)}, datetime('now'))
+ON CONFLICT(project_id, origin_key) DO UPDATE SET
+  origin_type = excluded.origin_type,
+  display_name = excluded.display_name,
+  usage_count = excluded.usage_count,
+  priority = excluded.priority,
+  updated_at = datetime('now');
+`;
 }
 
-function addArtifactQueryMatch(group, result) {
-  if (result.kind !== 'member') {
-    return;
-  }
-  if (group.matching_members.some((member) => member.selector === result.selector)) {
-    return;
-  }
+function upsertArtifactSql(projectId, artifact) {
+  const idSql = artifactIdSql(projectId, artifact.selector);
+  return `
+INSERT INTO artifacts (project_id, selector, language, artifact_type, framework, module_path, summary, usage_notes, limitations, source_anchor, priority, updated_at)
+VALUES (${sqlString(projectId)}, ${sqlString(artifact.selector)}, ${sqlString(artifact.language)}, ${sqlString(artifact.artifactType)}, ${sqlString(artifact.framework)}, ${sqlString(artifact.modulePath)}, ${sqlString(artifact.summary)}, ${sqlString(artifact.usageNotes)}, ${sqlString(artifact.limitations)}, ${sqlString(JSON.stringify(artifact.sourceAnchor))}, ${sqlInteger(artifact.priority)}, datetime('now'))
+ON CONFLICT(project_id, selector) DO UPDATE SET
+  language = excluded.language,
+  artifact_type = excluded.artifact_type,
+  framework = excluded.framework,
+  module_path = excluded.module_path,
+  summary = excluded.summary,
+  usage_notes = excluded.usage_notes,
+  limitations = excluded.limitations,
+  source_anchor = excluded.source_anchor,
+  priority = excluded.priority,
+  updated_at = datetime('now');
+${resetEntryTagsSql(projectId, 'artifact', idSql, artifact.capabilityTags)}
+`;
+}
 
-  group.matching_members.push({
-    selector: result.selector,
-    identifier: result.identifier,
-    title: result.title,
-    name: result.member_name,
-    member_type: result.member_type,
-    signature: result.signature,
-    signatures: result.signatures,
-    source_anchor: result.source_anchor,
-    summary: result.summary,
-    snippet: result.snippet,
+function upsertExternalSelectorSql(projectId, selector) {
+  const idSql = externalSelectorIdSql(projectId, selector.selector);
+  return `
+INSERT INTO external_selectors (project_id, selector, origin_id, origin_key, language, framework, summary, usage_notes, limitations, updated_at)
+VALUES (
+  ${sqlString(projectId)},
+  ${sqlString(selector.selector)},
+  (SELECT id FROM utility_origins WHERE project_id = ${sqlString(projectId)} AND origin_key = ${sqlString(selector.originKey)}),
+  ${sqlString(selector.originKey)},
+  ${sqlString(selector.language)},
+  ${sqlString(selector.framework)},
+  ${sqlString(selector.summary)},
+  ${sqlString(selector.usageNotes)},
+  ${sqlString(selector.limitations)},
+  datetime('now')
+)
+ON CONFLICT(project_id, selector) DO UPDATE SET
+  origin_id = excluded.origin_id,
+  origin_key = excluded.origin_key,
+  language = excluded.language,
+  framework = excluded.framework,
+  summary = excluded.summary,
+  usage_notes = excluded.usage_notes,
+  limitations = excluded.limitations,
+  updated_at = datetime('now');
+${resetEntryTagsSql(projectId, 'external_selector', idSql, selector.capabilityTags)}
+`;
+}
+
+function upsertSuppressionSql(projectId, suppression) {
+  return `
+INSERT INTO suppressions (project_id, suppression_key, target_kind, target_key, reason, fingerprint_key, updated_at)
+VALUES (${sqlString(projectId)}, ${sqlString(suppression.suppressionKey)}, ${sqlString(suppression.targetKind)}, ${sqlString(suppression.targetKey)}, ${sqlString(suppression.reason)}, ${sqlString(suppression.fingerprintKey)}, datetime('now'))
+ON CONFLICT(project_id, suppression_key) DO UPDATE SET
+  target_kind = excluded.target_kind,
+  target_key = excluded.target_key,
+  reason = excluded.reason,
+  fingerprint_key = excluded.fingerprint_key,
+  updated_at = datetime('now');
+`;
+}
+
+function upsertFingerprintSql(projectId, fingerprint) {
+  return `
+INSERT INTO discovery_fingerprints (project_id, fingerprint_key, target_kind, target_key, fingerprint, updated_at)
+VALUES (${sqlString(projectId)}, ${sqlString(fingerprint.fingerprintKey)}, ${sqlString(fingerprint.targetKind)}, ${sqlString(fingerprint.targetKey)}, ${sqlString(fingerprint.fingerprint)}, datetime('now'))
+ON CONFLICT(project_id, fingerprint_key) DO UPDATE SET
+  target_kind = excluded.target_kind,
+  target_key = excluded.target_key,
+  fingerprint = excluded.fingerprint,
+  updated_at = datetime('now');
+`;
+}
+
+function cleanupFullSql(projectId) {
+  return `
+DELETE FROM entry_capability_tags WHERE project_id = ${sqlString(projectId)};
+DELETE FROM artifacts WHERE project_id = ${sqlString(projectId)};
+DELETE FROM external_selectors WHERE project_id = ${sqlString(projectId)};
+DELETE FROM utility_origins WHERE project_id = ${sqlString(projectId)};
+DELETE FROM suppressions WHERE project_id = ${sqlString(projectId)};
+DELETE FROM discovery_fingerprints WHERE project_id = ${sqlString(projectId)};
+DELETE FROM capability_tags WHERE project_id = ${sqlString(projectId)};
+`;
+}
+
+function removalSql(projectId, removed) {
+  const statements = [];
+  for (const selector of removed.artifacts) {
+    statements.push(`DELETE FROM artifacts WHERE project_id = ${sqlString(projectId)} AND selector = ${sqlString(selector)};`);
+  }
+  for (const selector of removed.external_selectors) {
+    statements.push(`DELETE FROM external_selectors WHERE project_id = ${sqlString(projectId)} AND selector = ${sqlString(selector)};`);
+  }
+  for (const originKey of removed.origins) {
+    statements.push(`DELETE FROM utility_origins WHERE project_id = ${sqlString(projectId)} AND origin_key = ${sqlString(originKey)};`);
+  }
+  for (const suppressionKey of removed.suppressions) {
+    statements.push(`DELETE FROM suppressions WHERE project_id = ${sqlString(projectId)} AND suppression_key = ${sqlString(suppressionKey)};`);
+  }
+  for (const fingerprintKey of removed.fingerprints) {
+    statements.push(`DELETE FROM discovery_fingerprints WHERE project_id = ${sqlString(projectId)} AND fingerprint_key = ${sqlString(fingerprintKey)};`);
+  }
+  return statements.join('\n');
+}
+
+function pruneUnusedTagsSql(projectId) {
+  return `
+DELETE FROM capability_tags
+WHERE project_id = ${sqlString(projectId)}
+  AND id NOT IN (SELECT tag_id FROM entry_capability_tags WHERE project_id = ${sqlString(projectId)});
+`;
+}
+
+function buildApplySql(projectId, decisionFile) {
+  const statements = [];
+  if (decisionFile.project.mode === 'full') {
+    statements.push(cleanupFullSql(projectId));
+  } else {
+    statements.push(removalSql(projectId, decisionFile.removed));
+  }
+  for (const origin of decisionFile.origins) {
+    statements.push(upsertOriginSql(projectId, origin));
+  }
+  for (const artifact of decisionFile.artifacts) {
+    statements.push(upsertArtifactSql(projectId, artifact));
+  }
+  for (const selector of decisionFile.externalSelectors) {
+    statements.push(upsertExternalSelectorSql(projectId, selector));
+  }
+  for (const suppression of decisionFile.suppressions) {
+    statements.push(upsertSuppressionSql(projectId, suppression));
+  }
+  for (const fingerprint of decisionFile.fingerprints) {
+    statements.push(upsertFingerprintSql(projectId, fingerprint));
+  }
+  statements.push(pruneUnusedTagsSql(projectId));
+  return statements.join('\n');
+}
+
+function getCatalogCounts(context) {
+  return runSqliteJson(context.dbPath, `
+SELECT
+  (SELECT COUNT(*) FROM artifacts WHERE project_id = ${sqlString(context.projectId)}) AS artifacts,
+  (SELECT COUNT(*) FROM external_selectors WHERE project_id = ${sqlString(context.projectId)}) AS external_selectors,
+  (SELECT COUNT(*) FROM utility_origins WHERE project_id = ${sqlString(context.projectId)}) AS origins,
+  (SELECT COUNT(*) FROM suppressions WHERE project_id = ${sqlString(context.projectId)}) AS suppressions,
+  (SELECT COUNT(*) FROM discovery_fingerprints WHERE project_id = ${sqlString(context.projectId)}) AS fingerprints,
+  (SELECT COUNT(*) FROM capability_tags WHERE project_id = ${sqlString(context.projectId)}) AS capability_tags,
+  (SELECT COUNT(*) FROM entry_capability_tags WHERE project_id = ${sqlString(context.projectId)}) AS entry_capability_tags;
+`)[0] ?? {};
+}
+
+function diffCounts(before, after) {
+  const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
+  return Object.fromEntries(keys.map((key) => [key, Number(after[key] ?? 0) - Number(before[key] ?? 0)]));
+}
+
+function applyDiscoveryDecisionFile(context, decisionFile) {
+  return withProjectApplyLock(context, () => {
+    ensureProjectIndex(context);
+    const before = getCatalogCounts(context);
+    runSqlite(context.dbPath, transactionSql(buildApplySql(context.projectId, decisionFile)));
+    const after = getCatalogCounts(context);
+    return {
+      kind: 'tool_catalog_discovery_apply',
+      version: 2,
+      applied_at: new Date().toISOString(),
+      index_mutated: true,
+      project: projectContextToOutput(context),
+      mode: decisionFile.project.mode,
+      applied: {
+        artifacts: decisionFile.artifacts.length,
+        external_selectors: decisionFile.externalSelectors.length,
+        origins: decisionFile.origins.length,
+        suppressions: decisionFile.suppressions.length,
+        fingerprints: decisionFile.fingerprints.length,
+      },
+      removed: decisionFile.removed,
+      counts: {
+        before,
+        after,
+        delta: diffCounts(before, after),
+      },
+    };
   });
-  group.member_match_count = group.matching_members.length;
 }
 
-function buildGroupedQueryResults(results, limit) {
-  const grouped = [];
-  const artifactGroups = new Map();
-
-  for (const result of results) {
-    if (result.kind === 'artifact' || result.kind === 'member') {
-      const selector = `artifact:${result.artifact_key}`;
-      let group = artifactGroups.get(selector);
-      if (!group) {
-        group = createArtifactQueryGroup(result);
-        artifactGroups.set(selector, group);
-        grouped.push(group);
-      }
-      addArtifactQueryMatch(group, result);
-      continue;
-    }
-
-    grouped.push({
-      kind: result.kind,
-      selector: result.selector,
-      identifier: result.identifier,
-      title: result.title,
-      artifact_type: result.artifact_type,
-      member_type: result.member_type,
-      language: result.language,
-      framework: result.framework,
-      module_path: result.module_path,
-      source_anchor: result.source_anchor,
-      summary: result.summary,
-      signature: result.signature,
-      signatures: result.signatures,
-      snippet: result.snippet,
-      origin_type: result.origin_type,
-      origin_key: result.origin_key,
-      origin_display_name: result.origin_display_name,
-      origin_priority: result.origin_priority,
-      origin_priority_reason: result.origin_priority_reason,
-    });
-  }
-
-  return grouped
-    .slice(0, limit)
-    .map((result, index) => ({
-      rank: index + 1,
-      ...result,
-    }));
+function renderApplyMarkdown(summary) {
+  return [
+    '# Tool Catalog Discovery Apply',
+    '',
+    `Project: \`${summary.project.project_id}\``,
+    `Root: \`${summary.project.root_path}\``,
+    `Index: \`${summary.project.catalog_path}\``,
+    `Mode: \`${summary.mode}\``,
+    `Index mutated: \`${summary.index_mutated}\``,
+    '',
+    '## Applied',
+    `- Artifacts: ${summary.applied.artifacts}`,
+    `- External selectors: ${summary.applied.external_selectors}`,
+    `- Origins: ${summary.applied.origins}`,
+    `- Suppressions: ${summary.applied.suppressions}`,
+    `- Fingerprints: ${summary.applied.fingerprints}`,
+    '',
+    '## Count Delta',
+    ...Object.entries(summary.counts.delta).map(([key, value]) => `- ${key}: ${value >= 0 ? '+' : ''}${value}`),
+  ].join('\n') + '\n';
 }
 
-function textIncludesTerm(value, term) {
-  return String(value ?? '').toLowerCase().includes(term);
-}
-
-function wordBoundaryMatches(value, term) {
-  return new RegExp(`\\b${escapeRegExp(term)}`, 'i').test(String(value ?? ''));
-}
-
-function functionalScore(result, terms) {
-  const fields = [
-    { value: result.title, weight: 12 },
-    { value: result.identifier, weight: 10 },
-    { value: result.summary, weight: 6 },
-    { value: result.signature, weight: 6 },
-    { value: result.body, weight: 4 },
-    { value: result.import_text, weight: 4 },
-    { value: result.call_text, weight: 4 },
-    { value: result.artifact_type, weight: 3 },
-    { value: result.origin_display_name, weight: 2 },
-  ];
-  let score = 0;
-
-  for (const term of terms) {
-    for (const field of fields) {
-      if (textIncludesTerm(field.value, term)) {
-        score += field.weight;
-        if (wordBoundaryMatches(field.value, term)) {
-          score += 1;
-        }
-      }
-    }
-  }
-
-  if (Number.isFinite(result.fts_rank)) {
-    score += Math.max(0, 10 - Math.abs(result.fts_rank));
-  }
-
-  return score;
-}
-
-function originRank(result) {
-  return result.origin_type === 'external' ? 0 : 1;
-}
-
-function configuredOriginPriority(result) {
-  if (Number.isFinite(result.origin_priority)) {
-    return result.origin_priority;
-  }
-
-  return result.origin_type === 'external' ? 50 : 100;
-}
-
-function resultSelector(result) {
-  if (result.kind === 'artifact') {
-    return `artifact:${result.identifier}`;
-  }
-  if (result.kind === 'member') {
-    return `member:${result.identifier}`;
-  }
-  if (result.kind === 'template_pattern') {
-    return `template:${result.identifier}`;
-  }
-  if (result.kind === 'external_usage') {
-    return `external:${result.identifier}`;
-  }
-
-  return result.identifier;
-}
-
-function mapFtsRow(row) {
-  const kind = row.entry_type === 'template_pattern' ? 'template_pattern' : row.entry_type;
-  const isMember = kind === 'member';
-  const isTemplate = kind === 'template_pattern';
-  const anchor = parseStoredSourceAnchor(isMember ? row.member_source_anchor : (isTemplate ? row.template_source_anchor : row.artifact_source_anchor));
-  const artifactAnchor = parseStoredSourceAnchor(row.artifact_source_anchor);
-  const identifier = isMember ? row.member_key : (isTemplate ? row.pattern_key : row.artifact_key);
-  const title = isMember ? `${row.artifact_name}.${row.member_name}` : (isTemplate ? row.pattern_name : row.artifact_name);
-
+function unavailableOutput(kind, context, state) {
   return {
     kind,
-    identifier,
-    title,
-    artifact_id: row.artifact_id,
-    member_id: row.member_id,
-    pattern_id: row.pattern_id,
-    artifact_key: row.artifact_key,
-    artifact_name: row.artifact_name,
-    artifact_type: row.artifact_type,
-    artifact_source_anchor: anchorToOutput(artifactAnchor),
-    artifact_summary: row.artifact_summary,
-    member_type: row.member_type,
-    member_name: row.member_name,
-    language: isTemplate ? row.template_language : row.artifact_language,
-    framework: isTemplate ? row.template_framework : row.artifact_framework,
-    module_path: isTemplate ? row.template_module_path : row.artifact_module_path,
-    source_anchor: anchorToOutput(anchor),
-    summary: isMember ? row.member_summary : (isTemplate ? row.template_summary : row.artifact_summary),
-    signature: row.signature,
-    snippet: compactSnippet(isMember ? row.member_snippet : (isTemplate ? row.template_snippet : row.artifact_snippet)),
-    origin_type: isTemplate ? 'project' : (row.origin_type ?? 'project'),
-    origin_key: row.origin_key,
-    origin_display_name: isTemplate ? 'Project template pattern' : row.origin_display_name,
-    origin_priority: row.origin_priority === null || row.origin_priority === undefined ? null : Number(row.origin_priority),
-    origin_priority_reason: row.origin_priority_reason,
-    fts_rank: Number(row.fts_rank),
-    body: row.fts_body,
-    match_source: 'fts',
+    version: 1,
+    generated_at: new Date().toISOString(),
+    index_mutated: false,
+    project: projectContextToOutput(context),
+    index: {
+      status: state.reason,
+      schema_version: state.schemaVersion,
+      readable: false,
+    },
+    warnings: [
+      state.reason === 'missing-index'
+        ? 'No project index exists. Run tool-catalog-discover before consulting.'
+        : 'The project index schema is too old. Run discovery apply to migrate it.',
+    ],
   };
 }
 
-function queryFtsRows(context, ftsQuery, queryOptions) {
-  const rowLimit = Math.max(queryOptions.limit * 12, 120);
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  fts_entries.entry_type,
-  bm25(fts_entries) AS fts_rank,
-  artifacts.id AS artifact_id,
-  artifact_members.id AS member_id,
-  template_patterns.id AS pattern_id,
-  artifacts.artifact_key,
-  artifacts.artifact_type,
-  artifacts.name AS artifact_name,
-  artifacts.language AS artifact_language,
-  artifacts.framework AS artifact_framework,
-  artifacts.module_path AS artifact_module_path,
-  artifacts.source_anchor AS artifact_source_anchor,
-  artifacts.summary AS artifact_summary,
-  artifacts.snippet AS artifact_snippet,
-  artifact_members.member_key,
-  artifact_members.name AS member_name,
-  artifact_members.member_type,
-  artifact_members.signature,
-  artifact_members.source_anchor AS member_source_anchor,
-  artifact_members.summary AS member_summary,
-  artifact_members.snippet AS member_snippet,
-  template_patterns.pattern_key,
-  template_patterns.name AS pattern_name,
-  template_patterns.language AS template_language,
-  template_patterns.framework AS template_framework,
-  template_patterns.module_path AS template_module_path,
-  template_patterns.summary AS template_summary,
-  template_patterns.snippet AS template_snippet,
-  fts_entries.source_anchor AS template_source_anchor,
-  utility_origins.origin_key,
-  utility_origins.origin_type,
-  utility_origins.display_name AS origin_display_name,
-  origin_priorities.priority AS origin_priority,
-  origin_priorities.reason AS origin_priority_reason,
-  fts_entries.body AS fts_body
-FROM fts_entries
-LEFT JOIN artifact_members ON artifact_members.id = fts_entries.member_id
-LEFT JOIN artifacts ON artifacts.id = COALESCE(fts_entries.artifact_id, artifact_members.artifact_id)
-LEFT JOIN template_patterns ON template_patterns.id = fts_entries.pattern_id
-LEFT JOIN utility_origins ON utility_origins.id = artifacts.origin_id
-LEFT JOIN origin_priorities ON origin_priorities.project_id = artifacts.project_id
-  AND origin_priorities.origin_id = utility_origins.id
-WHERE fts_entries.project_id = ${sqlString(context.projectId)}
-  AND fts_entries MATCH ${sqlString(ftsQuery)}
-  ${queryTagFilterSql(context.projectId, queryOptions.tags)}
-ORDER BY fts_rank ASC
-LIMIT ${sqlLimit(rowLimit)};
-`).map(mapFtsRow);
+function entryTagsSql(entryType, idExpression) {
+  return `(SELECT json_group_array(capability_tags.tag)
+    FROM entry_capability_tags
+    JOIN capability_tags ON capability_tags.id = entry_capability_tags.tag_id
+    WHERE entry_capability_tags.entry_type = ${sqlString(entryType)}
+      AND entry_capability_tags.entry_id = ${idExpression})`;
 }
 
-function externalUsageWhereSql(terms) {
-  if (terms.length === 0) {
-    return '1 = 1';
-  }
-
-  const conditions = terms.flatMap((term) => {
-    const like = sqlString(`%${term}%`);
-    return [
-      `LOWER(COALESCE(observed_external_usages.usage_key, '')) LIKE ${like}`,
-      `LOWER(COALESCE(observed_external_usages.import_text, '')) LIKE ${like}`,
-      `LOWER(COALESCE(observed_external_usages.call_text, '')) LIKE ${like}`,
-      `LOWER(COALESCE(utility_origins.origin_key, '')) LIKE ${like}`,
-      `LOWER(COALESCE(utility_origins.display_name, '')) LIKE ${like}`,
-    ];
-  });
-
-  return `(${conditions.join(' OR ')})`;
-}
-
-function mapExternalUsageRow(row) {
-  const anchor = parseStoredSourceAnchor(row.source_anchor);
-  return {
-    kind: 'external_usage',
-    identifier: row.usage_key,
-    title: row.origin_display_name ?? row.origin_key ?? row.usage_key,
-    usage_id: row.usage_id,
-    language: row.language,
-    framework: row.framework,
-    module_path: getModulePath(anchor?.path ?? ''),
-    source_anchor: anchorToOutput(anchor),
-    summary: `Observed external utility usage from ${row.origin_display_name ?? row.origin_key}.`,
-    import_text: row.import_text,
-    call_text: row.call_text,
-    snippet: compactSnippet(row.call_text ?? row.import_text),
-    origin_type: row.origin_type ?? 'external',
-    origin_key: row.origin_key,
-    origin_display_name: row.origin_display_name,
-    origin_priority: row.origin_priority === null || row.origin_priority === undefined ? null : Number(row.origin_priority),
-    origin_priority_reason: row.origin_priority_reason,
-    match_source: 'structured',
-  };
-}
-
-function queryExternalUsageRows(context, terms, queryOptions) {
-  if (queryOptions.tags.length > 0) {
+function parseJsonArray(value) {
+  if (!value) {
     return [];
   }
-
-  const rowLimit = Math.max(queryOptions.limit * 8, 100);
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  observed_external_usages.id AS usage_id,
-  observed_external_usages.usage_key,
-  observed_external_usages.source_anchor,
-  observed_external_usages.import_text,
-  observed_external_usages.call_text,
-  observed_external_usages.language,
-  observed_external_usages.framework,
-  utility_origins.origin_key,
-  utility_origins.origin_type,
-  utility_origins.display_name AS origin_display_name,
-  origin_priorities.priority AS origin_priority,
-  origin_priorities.reason AS origin_priority_reason
-FROM observed_external_usages
-LEFT JOIN utility_origins ON utility_origins.id = observed_external_usages.origin_id
-LEFT JOIN origin_priorities ON origin_priorities.project_id = observed_external_usages.project_id
-  AND origin_priorities.origin_id = utility_origins.id
-WHERE observed_external_usages.project_id = ${sqlString(context.projectId)}
-  AND ${externalUsageWhereSql(terms)}
-LIMIT ${sqlLimit(rowLimit)};
-`).map(mapExternalUsageRow);
-}
-
-function rankQueryResults(results, terms, currentFile) {
-  return results
-    .map((result) => ({
-      ...result,
-      selector: resultSelector(result),
-      functional_score: functionalScore(result, terms),
-      origin_rank: originRank(result),
-      origin_priority: configuredOriginPriority(result),
-      module_proximity: moduleProximityScore(currentFile, result.module_path),
-    }))
-    .sort((left, right) => {
-      if (right.functional_score !== left.functional_score) {
-        return right.functional_score - left.functional_score;
-      }
-      if (right.origin_rank !== left.origin_rank) {
-        return right.origin_rank - left.origin_rank;
-      }
-      if (right.origin_priority !== left.origin_priority) {
-        return right.origin_priority - left.origin_priority;
-      }
-      if (right.module_proximity !== left.module_proximity) {
-        return right.module_proximity - left.module_proximity;
-      }
-      return left.selector.localeCompare(right.selector);
-    });
-}
-
-function hydrateQueryResult(context, result) {
-  if (result.kind !== 'member' || !result.member_id) {
-    return result;
+  try {
+    return JSON.parse(value).filter(Boolean);
+  } catch {
+    return [];
   }
+}
 
+function loadTagsForEntry(context, entryType, entryId) {
+  return runSqliteJson(context.dbPath, `
+SELECT capability_tags.tag
+FROM entry_capability_tags
+JOIN capability_tags ON capability_tags.id = entry_capability_tags.tag_id
+WHERE entry_capability_tags.project_id = ${sqlString(context.projectId)}
+  AND entry_capability_tags.entry_type = ${sqlString(entryType)}
+  AND entry_capability_tags.entry_id = ${sqlInteger(entryId)}
+ORDER BY capability_tags.tag;
+`, { readOnly: true }).map((row) => row.tag);
+}
+
+function loadTags(context) {
+  return runSqliteJson(context.dbPath, `
+SELECT
+  capability_tags.tag,
+  COUNT(DISTINCT entry_capability_tags.entry_type || ':' || entry_capability_tags.entry_id) AS entry_count,
+  COUNT(DISTINCT CASE WHEN entry_capability_tags.entry_type = 'artifact' THEN entry_capability_tags.entry_id END) AS project_entry_count,
+  COUNT(DISTINCT CASE WHEN entry_capability_tags.entry_type = 'external_selector' THEN entry_capability_tags.entry_id END) AS external_entry_count
+FROM capability_tags
+LEFT JOIN entry_capability_tags
+  ON entry_capability_tags.project_id = capability_tags.project_id
+  AND entry_capability_tags.tag_id = capability_tags.id
+WHERE capability_tags.project_id = ${sqlString(context.projectId)}
+GROUP BY capability_tags.id, capability_tags.tag
+ORDER BY capability_tags.tag;
+`, { readOnly: true }).map((row) => ({
+    tag: row.tag,
+    entry_count: Number(row.entry_count ?? 0),
+    project_entry_count: Number(row.project_entry_count ?? 0),
+    external_entry_count: Number(row.external_entry_count ?? 0),
+  }));
+}
+
+function buildTagsOutput(context, state) {
+  if (!state.readable) {
+    return { ...unavailableOutput('tool_catalog_tags', context, state), tags: [] };
+  }
   return {
-    ...result,
-    ...memberSignatureFields(loadMemberSignatures(context, result.member_id)),
+    kind: 'tool_catalog_tags',
+    version: 2,
+    generated_at: new Date().toISOString(),
+    index_mutated: false,
+    project: projectContextToOutput(context),
+    tags: loadTags(context),
+    warnings: [],
   };
+}
+
+function renderTagsMarkdown(output) {
+  const lines = [
+    '# Tool Catalog Tags',
+    '',
+    `Project: \`${output.project.project_id}\``,
+    `Index mutated: \`${output.index_mutated ?? false}\``,
+    '',
+    '## Tags',
+  ];
+  if (!output.tags?.length) {
+    lines.push('- None.');
+  } else {
+    for (const tag of output.tags) {
+      lines.push(`- \`${tag.tag}\` (${tag.entry_count} entries; project ${tag.project_entry_count}, external ${tag.external_entry_count})`);
+    }
+  }
+  if (output.warnings?.length) {
+    lines.push('', '## Notes', ...output.warnings.map((warning) => `- ${warning}`));
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+function textTerms(description) {
+  return [...new Set(String(description ?? '').toLowerCase().match(/[a-z0-9]+/g) ?? [])].filter((term) => term.length >= 2);
+}
+
+function hasAllTerms(row, terms) {
+  if (terms.length === 0) {
+    return true;
+  }
+  const haystack = `${row.summary ?? ''} ${row.usage_notes ?? ''} ${row.limitations ?? ''}`.toLowerCase();
+  return terms.every((term) => haystack.includes(term));
+}
+
+function hasAllTags(row, tags) {
+  if (tags.length === 0) {
+    return true;
+  }
+  const rowTags = new Set(parseJsonArray(row.capability_tags));
+  return tags.every((tag) => rowTags.has(tag));
+}
+
+function inFilter(value, filters) {
+  return filters.length === 0 || filters.includes(String(value ?? '').toLowerCase());
+}
+
+function queryArtifactRows(context) {
+  return runSqliteJson(context.dbPath, `
+SELECT
+  artifacts.*,
+  ${entryTagsSql('artifact', 'artifacts.id')} AS capability_tags
+FROM artifacts
+WHERE artifacts.project_id = ${sqlString(context.projectId)}
+ORDER BY artifacts.priority ASC, artifacts.selector ASC;
+`, { readOnly: true });
+}
+
+function queryExternalRows(context) {
+  return runSqliteJson(context.dbPath, `
+SELECT
+  external_selectors.*,
+  utility_origins.display_name,
+  utility_origins.origin_type,
+  utility_origins.usage_count,
+  utility_origins.priority,
+  ${entryTagsSql('external_selector', 'external_selectors.id')} AS capability_tags
+FROM external_selectors
+JOIN utility_origins ON utility_origins.id = external_selectors.origin_id
+WHERE external_selectors.project_id = ${sqlString(context.projectId)}
+ORDER BY utility_origins.priority ASC, external_selectors.selector ASC;
+`, { readOnly: true });
+}
+
+function artifactQueryItem(row) {
+  return {
+    kind: 'artifact',
+    selector: row.selector,
+    summary: row.summary,
+    capability_tags: parseJsonArray(row.capability_tags),
+    priority: Number(row.priority),
+    language: row.language,
+    framework: row.framework ?? undefined,
+    module_path: row.module_path ?? undefined,
+  };
+}
+
+function externalQueryItem(row) {
+  return {
+    kind: 'external',
+    selector: row.selector,
+    summary: row.summary,
+    capability_tags: parseJsonArray(row.capability_tags),
+    priority: Number(row.priority),
+    language: row.language,
+    framework: row.framework ?? undefined,
+    origin_key: row.origin_key,
+    display_name: row.display_name,
+    usage_count: Number(row.usage_count ?? 0),
+  };
+}
+
+function passesArtifactFilters(row, queryOptions, terms) {
+  return hasAllTags(row, queryOptions.tags)
+    && hasAllTerms(row, terms)
+    && inFilter(row.language, queryOptions.languages)
+    && inFilter(row.framework, queryOptions.frameworks)
+    && inFilter(row.artifact_type, queryOptions.artifactTypes);
+}
+
+function passesExternalFilters(row, queryOptions, terms) {
+  return hasAllTags(row, queryOptions.tags)
+    && hasAllTerms(row, terms)
+    && inFilter(row.language, queryOptions.languages)
+    && inFilter(row.framework, queryOptions.frameworks);
 }
 
 function buildQueryOutput(context, state, queryOptions) {
   if (!state.readable) {
-    return buildUnavailableIndexOutput('tool_catalog_query', context, state);
+    return { ...unavailableOutput('tool_catalog_query', context, state), results: [] };
   }
-
-  const terms = goalTerms(queryOptions.goal);
-  if (terms.length === 0) {
-    throw new ToolCatalogError('Query goal must include at least one searchable word.', 2);
-  }
-
-  const currentFile = normalizeCurrentFile(context.rootPath, queryOptions.currentFile);
-  const ftsResults = queryFtsRows(context, ftsQueryFromTerms(terms), queryOptions);
-  const externalResults = queryExternalUsageRows(context, terms, queryOptions);
-  const rankedResults = rankQueryResults([...ftsResults, ...externalResults], terms, currentFile)
-    .filter((result) => result.functional_score > 0)
-    .filter((result) => passesQueryFilters(result, queryOptions))
-    .map((result) => hydrateQueryResult(context, result));
-  const groupedResults = buildGroupedQueryResults(rankedResults, queryOptions.limit);
+  const terms = textTerms(queryOptions.description);
+  const artifacts = queryArtifactRows(context)
+    .filter((row) => passesArtifactFilters(row, queryOptions, terms))
+    .slice(0, queryOptions.limit)
+    .map(artifactQueryItem);
+  const remaining = Math.max(0, queryOptions.limit - artifacts.length);
+  const external = remaining === 0 ? [] : queryExternalRows(context)
+    .filter((row) => passesExternalFilters(row, queryOptions, terms))
+    .slice(0, remaining)
+    .map(externalQueryItem);
+  const results = [...artifacts, ...external];
   const warnings = [];
-
-  if (rankedResults.some((result) => result.origin_type === 'external' && !result.origin_priority_reason)) {
-    warnings.push('One or more external results have no configured priority reason; verify the origin before reuse.');
+  if (queryOptions.tags.length > 0 && results.length === 0) {
+    warnings.push('No results matched the exact tag filter. Inspect tool-catalog tags or broaden once with --description.');
   }
-  if (groupedResults.length === 0) {
-    if (queryOptions.tags.length > 0) {
-      warnings.push('No reusable catalog entries matched the exact tag filters. Inspect `tool-catalog tags` to remap once to a better canonical tag, or retry once without --tag.');
-    } else {
-      warnings.push('No reusable catalog entries matched the query and filters. Broaden the goal or run discovery if this index is incomplete.');
-    }
-  }
-
   return {
     kind: 'tool_catalog_query',
     version: 2,
@@ -5878,17 +1433,14 @@ function buildQueryOutput(context, state, queryOptions) {
     index_mutated: false,
     project: projectContextToOutput(context),
     query: {
-      goal: queryOptions.goal,
-      tag_filters: queryOptions.tags,
-      current_file: currentFile,
-      language_filters: queryOptions.languages,
-      framework_filters: queryOptions.frameworks,
-      artifact_type_filters: queryOptions.artifactTypes,
+      tags: queryOptions.tags,
+      description: queryOptions.description,
       limit: queryOptions.limit,
-      terms,
-      ranking: ['functional_match', 'project_owned_origin', 'external_origin_priority', 'weak_module_proximity'],
+      language: queryOptions.languages,
+      framework: queryOptions.frameworks,
+      artifact_type: queryOptions.artifactTypes,
     },
-    results: groupedResults,
+    results,
     warnings,
   };
 }
@@ -5898,756 +1450,132 @@ function renderQueryMarkdown(output) {
     '# Tool Catalog Query',
     '',
     `Project: \`${output.project.project_id}\``,
-    `Root: \`${output.project.root_path}\``,
-    `Goal: ${output.query ? `\`${output.query.goal}\`` : '`n/a`'}`,
     `Index mutated: \`${output.index_mutated ?? false}\``,
     '',
     '## Results',
   ];
-
-  if (output.results.length === 0) {
+  if (!output.results?.length) {
     lines.push('- None.');
   } else {
     for (const result of output.results) {
-      lines.push(`${result.rank}. \`${result.selector}\` ${result.title}`);
-      lines.push(`   Kind: \`${result.kind}\`; language: \`${result.language ?? 'n/a'}\`; framework: \`${result.framework ?? 'n/a'}\`; type: \`${result.artifact_type ?? result.member_type ?? result.kind}\`.`);
-      lines.push(`   Source: \`${result.source_anchor?.text ?? 'n/a'}\`; origin: \`${result.origin_type ?? 'project'}:${result.origin_display_name ?? result.origin_key ?? 'project'}\`.`);
-      if (result.summary) {
-        lines.push(`   Use: ${result.summary}`);
-      }
-      if (result.best_match && result.best_match.selector !== result.selector) {
-        lines.push(`   Best match: \`${result.best_match.selector}\` at \`${result.best_match.source_anchor?.text ?? 'n/a'}\`.`);
-      }
-      if ((result.signatures?.length ?? 0) > 1) {
-        lines.push(`   Signatures: ${result.signatures.map((signature) => `\`${signature.signature}\``).join('; ')}`);
-      } else if (result.signature) {
-        lines.push(`   Example: \`${result.signature}\``);
-      } else if (result.snippet) {
-        lines.push(`   Example: \`${result.snippet}\``);
-      }
-      if (result.matching_members?.length > 0) {
-        lines.push('   Matching members:');
-        for (const member of result.matching_members) {
-          if ((member.signatures?.length ?? 0) > 1) {
-            lines.push(`   - \`${member.selector}\` Signatures: ${member.signatures.map((signature) => `\`${signature.signature}\``).join('; ')} at \`${member.source_anchor?.text ?? 'n/a'}\``);
-          } else if (member.signature) {
-            lines.push(`   - \`${member.selector}\` \`${member.signature}\` at \`${member.source_anchor?.text ?? 'n/a'}\``);
-          } else {
-            lines.push(`   - \`${member.selector}\` at \`${member.source_anchor?.text ?? 'n/a'}\``);
-          }
-        }
+      const tags = result.capability_tags.map((tag) => `\`${tag}\``).join(', ');
+      lines.push(`- \`${result.selector}\` (${result.kind}, priority ${result.priority})`);
+      lines.push(`  Summary: ${result.summary}`);
+      lines.push(`  Tags: ${tags || 'none'}`);
+      if (result.kind === 'external') {
+        lines.push(`  Origin: \`${result.origin_key}\` (${result.display_name}, usage ${result.usage_count})`);
       }
     }
   }
-
-  if (output.warnings.length > 0) {
-    lines.push('', '## Notes');
-    for (const warning of output.warnings) {
-      lines.push(`- ${warning}`);
-    }
+  if (output.warnings?.length) {
+    lines.push('', '## Notes', ...output.warnings.map((warning) => `- ${warning}`));
   }
-
   return `${lines.join('\n')}\n`;
 }
 
-function printQueryOutput(output, options) {
-  if (options.json) {
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
-  }
-
-  process.stdout.write(renderQueryMarkdown(output));
-}
-
-function selectorCandidates(selector) {
-  const raw = normalizeNullableString(selector);
-  if (!raw) {
-    return { kind: null, identifiers: [] };
-  }
-
-  const mappings = [
-    { prefix: 'artifact:', kind: 'artifact' },
-    { prefix: 'member:', kind: 'member' },
-    { prefix: 'template:', kind: 'template_pattern' },
-    { prefix: 'template-pattern:', kind: 'template_pattern' },
-    { prefix: 'external:', kind: 'external_usage' },
-  ];
-
-  for (const mapping of mappings) {
-    if (raw.startsWith(mapping.prefix)) {
-      const stripped = raw.slice(mapping.prefix.length);
-      return {
-        kind: mapping.kind,
-        identifiers: [...new Set([stripped, raw].filter(Boolean))],
-      };
+function parseStoredAnchor(value) {
+  try {
+    const parsed = JSON.parse(value);
+    if (isPlainObject(parsed)) {
+      return parsed;
     }
+  } catch {
+    return null;
   }
-
-  return {
-    kind: null,
-    identifiers: [raw],
-  };
-}
-
-function loadArtifactRows(context, identifiers) {
-  const idList = sqlStringList(identifiers);
-  if (!idList) {
-    return [];
-  }
-
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  artifacts.id AS artifact_id,
-  artifacts.artifact_key,
-  artifacts.artifact_type,
-  artifacts.name,
-  artifacts.language,
-  artifacts.framework,
-  artifacts.module_path,
-  artifacts.source_anchor,
-  artifacts.summary,
-  artifacts.usage_notes,
-  artifacts.limitations,
-  artifacts.snippet,
-  utility_origins.origin_key,
-  utility_origins.origin_type,
-  utility_origins.display_name AS origin_display_name,
-  utility_origins.summary AS origin_summary,
-  origin_priorities.priority AS origin_priority,
-  origin_priorities.reason AS origin_priority_reason
-FROM artifacts
-LEFT JOIN utility_origins ON utility_origins.id = artifacts.origin_id
-LEFT JOIN origin_priorities ON origin_priorities.project_id = artifacts.project_id
-  AND origin_priorities.origin_id = utility_origins.id
-WHERE artifacts.project_id = ${sqlString(context.projectId)}
-  AND artifacts.artifact_key IN (${idList});
-`);
-}
-
-function loadMemberRows(context, identifiers) {
-  const idList = sqlStringList(identifiers);
-  if (!idList) {
-    return [];
-  }
-
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  artifact_members.id AS member_id,
-  artifact_members.member_key,
-  artifact_members.name AS member_name,
-  artifact_members.member_type,
-  artifact_members.signature,
-  artifact_members.source_anchor,
-  artifact_members.summary,
-  artifact_members.usage_notes,
-  artifact_members.limitations,
-  artifact_members.snippet,
-  artifacts.id AS artifact_id,
-  artifacts.artifact_key,
-  artifacts.artifact_type,
-  artifacts.name AS artifact_name,
-  artifacts.language,
-  artifacts.framework,
-  artifacts.module_path,
-  utility_origins.origin_key,
-  utility_origins.origin_type,
-  utility_origins.display_name AS origin_display_name,
-  origin_priorities.priority AS origin_priority,
-  origin_priorities.reason AS origin_priority_reason
-FROM artifact_members
-JOIN artifacts ON artifacts.id = artifact_members.artifact_id
-LEFT JOIN utility_origins ON utility_origins.id = artifacts.origin_id
-LEFT JOIN origin_priorities ON origin_priorities.project_id = artifacts.project_id
-  AND origin_priorities.origin_id = utility_origins.id
-WHERE artifacts.project_id = ${sqlString(context.projectId)}
-  AND artifact_members.member_key IN (${idList});
-`);
-}
-
-function loadTemplateRows(context, identifiers) {
-  const idList = sqlStringList(identifiers);
-  if (!idList) {
-    return [];
-  }
-
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  template_patterns.id AS pattern_id,
-  template_patterns.pattern_key,
-  template_patterns.name,
-  template_patterns.language,
-  template_patterns.framework,
-  template_patterns.module_path,
-  template_patterns.summary,
-  template_patterns.usage_notes,
-  template_patterns.limitations,
-  template_patterns.snippet,
-  COUNT(template_instances.id) AS instance_count
-FROM template_patterns
-LEFT JOIN template_instances ON template_instances.pattern_id = template_patterns.id
-WHERE template_patterns.project_id = ${sqlString(context.projectId)}
-  AND template_patterns.pattern_key IN (${idList})
-GROUP BY template_patterns.id;
-`);
-}
-
-function loadExternalUsageRows(context, identifiers) {
-  const idList = sqlStringList(identifiers);
-  if (!idList) {
-    return [];
-  }
-
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  observed_external_usages.id AS usage_id,
-  observed_external_usages.usage_key,
-  observed_external_usages.source_anchor,
-  observed_external_usages.import_text,
-  observed_external_usages.call_text,
-  observed_external_usages.language,
-  observed_external_usages.framework,
-  utility_origins.origin_key,
-  utility_origins.origin_type,
-  utility_origins.display_name AS origin_display_name,
-  utility_origins.summary AS origin_summary,
-  origin_priorities.priority AS origin_priority,
-  origin_priorities.reason AS origin_priority_reason
-FROM observed_external_usages
-LEFT JOIN utility_origins ON utility_origins.id = observed_external_usages.origin_id
-LEFT JOIN origin_priorities ON origin_priorities.project_id = observed_external_usages.project_id
-  AND origin_priorities.origin_id = utility_origins.id
-WHERE observed_external_usages.project_id = ${sqlString(context.projectId)}
-  AND observed_external_usages.usage_key IN (${idList});
-`);
-}
-
-function loadArtifactMembers(context, artifactId) {
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  id,
-  member_key,
-  name,
-  member_type,
-  signature,
-  source_anchor,
-  summary,
-  usage_notes,
-  limitations,
-  snippet
-FROM artifact_members
-WHERE artifact_id = ${sqlInteger(artifactId)}
-ORDER BY name;
-`);
-}
-
-function loadMemberSignatures(context, memberId) {
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  signature,
-  source_anchor
-FROM member_signatures
-WHERE member_id = ${sqlInteger(memberId)}
-ORDER BY
-  CASE
-    WHEN json_valid(source_anchor) THEN CAST(json_extract(source_anchor, '$.line') AS INTEGER)
-    ELSE 1
-  END,
-  signature;
-`);
-}
-
-function loadTemplateInstances(context, patternId) {
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  source_anchor,
-  module_path,
-  snippet
-FROM template_instances
-WHERE pattern_id = ${sqlInteger(patternId)}
-ORDER BY source_anchor
-LIMIT 20;
-`);
-}
-
-function loadEntryCapabilityTags(context, entryType, entryId) {
-  return runSqliteReadOnlyJson(context.dbPath, `
-SELECT
-  capability_tags.tag,
-  capability_tags.description
-FROM entry_capability_tags
-JOIN capability_tags ON capability_tags.id = entry_capability_tags.tag_id
-WHERE entry_capability_tags.project_id = ${sqlString(context.projectId)}
-  AND entry_capability_tags.entry_type = ${sqlString(entryType)}
-  AND entry_capability_tags.entry_id = ${sqlInteger(entryId)}
-ORDER BY capability_tags.tag;
-`);
-}
-
-function signatureEntryToOutput(signature) {
-  return {
-    signature: signature.signature,
-    source_anchor: anchorToOutput(parseStoredSourceAnchor(signature.source_anchor)),
-  };
-}
-
-function artifactEntryFromRow(context, row) {
-  const members = loadArtifactMembers(context, row.artifact_id).map((member) => ({
-    ...memberSignatureFields(loadMemberSignatures(context, member.id)),
-    kind: 'member',
-    identifier: member.member_key,
-    name: member.name,
-    member_type: member.member_type,
-    source_anchor: anchorToOutput(parseStoredSourceAnchor(member.source_anchor)),
-    summary: member.summary,
-    usage_notes: member.usage_notes,
-    limitations: member.limitations,
-    capability_tags: loadEntryCapabilityTags(context, 'member', member.id),
-    snippet: compactSnippet(member.snippet),
-  }));
-
-  return {
-    kind: 'artifact',
-    selector: `artifact:${row.artifact_key}`,
-    identifier: row.artifact_key,
-    title: row.name,
-    artifact_type: row.artifact_type,
-    language: row.language,
-    framework: row.framework,
-    module_path: row.module_path,
-    source_anchor: anchorToOutput(parseStoredSourceAnchor(row.source_anchor)),
-    summary: row.summary,
-    usage_notes: row.usage_notes,
-    limitations: row.limitations,
-    capability_tags: loadEntryCapabilityTags(context, 'artifact', row.artifact_id),
-    snippet: compactSnippet(row.snippet),
-    origin: {
-      key: row.origin_key,
-      type: row.origin_type ?? 'project',
-      display_name: row.origin_display_name,
-      summary: row.origin_summary,
-      priority: configuredOriginPriority({ origin_type: row.origin_type, origin_priority: row.origin_priority === null || row.origin_priority === undefined ? null : Number(row.origin_priority) }),
-      priority_reason: row.origin_priority_reason,
-    },
-    members,
-  };
-}
-
-function memberEntryFromRow(context, row) {
-  const signatures = memberSignatureFields(loadMemberSignatures(context, row.member_id));
-  return {
-    ...signatures,
-    kind: 'member',
-    selector: `member:${row.member_key}`,
-    identifier: row.member_key,
-    title: `${row.artifact_name}.${row.member_name}`,
-    name: row.member_name,
-    member_type: row.member_type,
-    language: row.language,
-    framework: row.framework,
-    module_path: row.module_path,
-    source_anchor: anchorToOutput(parseStoredSourceAnchor(row.source_anchor)),
-    summary: row.summary,
-    usage_notes: row.usage_notes,
-    limitations: row.limitations,
-    capability_tags: loadEntryCapabilityTags(context, 'member', row.member_id),
-    snippet: compactSnippet(row.snippet),
-    artifact: {
-      key: row.artifact_key,
-      name: row.artifact_name,
-      type: row.artifact_type,
-    },
-    origin: {
-      key: row.origin_key,
-      type: row.origin_type ?? 'project',
-      display_name: row.origin_display_name,
-      priority: configuredOriginPriority({ origin_type: row.origin_type, origin_priority: row.origin_priority === null || row.origin_priority === undefined ? null : Number(row.origin_priority) }),
-      priority_reason: row.origin_priority_reason,
-    },
-  };
-}
-
-function memberSignatureFields(signatures) {
-  const items = signatures.map(signatureEntryToOutput);
-  return {
-    signature: items[0]?.signature ?? null,
-    signature_count: items.length,
-    signatures: items,
-  };
-}
-
-function templateEntryFromRow(context, row) {
-  const instances = loadTemplateInstances(context, row.pattern_id).map((instance) => ({
-    source_anchor: anchorToOutput(parseStoredSourceAnchor(instance.source_anchor)),
-    module_path: instance.module_path,
-    snippet: compactSnippet(instance.snippet),
-  }));
-
-  return {
-    kind: 'template_pattern',
-    selector: `template:${row.pattern_key}`,
-    identifier: row.pattern_key,
-    title: row.name,
-    language: row.language,
-    framework: row.framework,
-    module_path: row.module_path,
-    source_anchor: instances[0]?.source_anchor ?? null,
-    summary: row.summary,
-    usage_notes: row.usage_notes,
-    limitations: row.limitations,
-    capability_tags: loadEntryCapabilityTags(context, 'template_pattern', row.pattern_id),
-    snippet: compactSnippet(row.snippet),
-    instance_count: Number(row.instance_count ?? instances.length),
-    instances,
-  };
-}
-
-function externalUsageEntryFromRow(row) {
-  return {
-    kind: 'external_usage',
-    selector: `external:${row.usage_key}`,
-    identifier: row.usage_key,
-    title: row.origin_display_name ?? row.origin_key ?? row.usage_key,
-    language: row.language,
-    framework: row.framework,
-    module_path: getModulePath(parseStoredSourceAnchor(row.source_anchor)?.path ?? ''),
-    source_anchor: anchorToOutput(parseStoredSourceAnchor(row.source_anchor)),
-    summary: `Observed external utility usage from ${row.origin_display_name ?? row.origin_key}.`,
-    import_text: row.import_text,
-    call_text: row.call_text,
-    snippet: compactSnippet(row.call_text ?? row.import_text),
-    origin: {
-      key: row.origin_key,
-      type: row.origin_type ?? 'external',
-      display_name: row.origin_display_name,
-      summary: row.origin_summary,
-      priority: configuredOriginPriority({ origin_type: row.origin_type ?? 'external', origin_priority: row.origin_priority === null || row.origin_priority === undefined ? null : Number(row.origin_priority) }),
-      priority_reason: row.origin_priority_reason,
-    },
-  };
-}
-
-function loadCatalogEntry(context, selector) {
-  const parsed = selectorCandidates(selector);
-  const loaders = [
-    {
-      kind: 'artifact',
-      load: () => loadArtifactRows(context, parsed.identifiers).map((row) => artifactEntryFromRow(context, row)),
-    },
-    {
-      kind: 'member',
-      load: () => loadMemberRows(context, parsed.identifiers).map((row) => memberEntryFromRow(context, row)),
-    },
-    {
-      kind: 'template_pattern',
-      load: () => loadTemplateRows(context, parsed.identifiers).map((row) => templateEntryFromRow(context, row)),
-    },
-    {
-      kind: 'external_usage',
-      load: () => loadExternalUsageRows(context, parsed.identifiers).map(externalUsageEntryFromRow),
-    },
-  ].filter((loader) => !parsed.kind || loader.kind === parsed.kind);
-
-  const entries = loaders.flatMap((loader) => loader.load());
-  if (entries.length === 0) {
-    return {
-      found: false,
-      selector,
-      entries: [],
-      message: `No catalog entry matched selector '${selector}'.`,
-    };
-  }
-  if (entries.length > 1) {
-    return {
-      found: false,
-      selector,
-      entries,
-      message: `Selector '${selector}' is ambiguous; use a prefixed selector from query output.`,
-    };
-  }
-
-  return {
-    found: true,
-    selector,
-    entry: entries[0],
-  };
-}
-
-function symbolNeedles(anchor, hints = {}) {
-  const values = [
-    anchor?.symbol,
-    hints.name,
-    hints.title,
-    hints.signature,
-    hints.importText,
-    hints.callText,
-    hints.snippet,
-  ].filter(Boolean);
-  const needles = new Set();
-
-  for (const value of values) {
-    const text = String(value).trim();
-    if (!text) {
-      continue;
-    }
-    needles.add(text);
-    if (text.includes('#')) {
-      needles.add(text.split('#').at(-1));
-    }
-    if (text.includes('.')) {
-      needles.add(text.split('.').at(-1));
-    }
-    if (text.includes('/')) {
-      needles.add(path.posix.basename(text, path.posix.extname(text)));
-    }
-  }
-
-  return [...needles]
-    .map((needle) => needle.replace(/\s+/g, ' ').trim())
-    .filter((needle) => needle.length >= 2)
-    .slice(0, 12);
-}
-
-function literalNeedles(values) {
-  return [...new Set(values.filter(Boolean)
-    .map((value) => String(value).replace(/\s+/g, ' ').trim())
-    .filter((value) => value.length >= 2))]
-    .slice(0, 12);
-}
-
-function normalizedLine(value) {
-  return String(value ?? '').replace(/\s+/g, ' ').trim();
-}
-
-function findNeedleLine(lines, needles) {
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = normalizedLine(lines[index]);
-    if (needles.some((needle) => line.includes(normalizedLine(needle)))) {
-      return index + 1;
-    }
-  }
-
   return null;
 }
 
-function verifySourceAnchor(rootPath, anchorOutput, hints = {}) {
-  if (!anchorOutput || anchorOutput.invalid) {
-    return {
-      status: 'invalid-anchor',
-      ok: false,
-      anchor: anchorOutput,
-      message: 'The stored source anchor is invalid.',
-    };
+function loadArtifactEntry(context, selector) {
+  const rows = runSqliteJson(context.dbPath, `
+SELECT * FROM artifacts
+WHERE project_id = ${sqlString(context.projectId)}
+  AND selector = ${sqlString(selector)}
+LIMIT 1;
+`, { readOnly: true });
+  if (rows.length === 0) {
+    return null;
   }
-
-  const absolutePath = path.resolve(rootPath, anchorOutput.path);
-  if (!isInsideRoot(rootPath, absolutePath)) {
-    return {
-      status: 'outside-root',
-      ok: false,
-      anchor: anchorOutput,
-      message: 'The stored source anchor points outside the current root.',
-    };
-  }
-  if (!fs.existsSync(absolutePath)) {
-    return {
-      status: 'missing-file',
-      ok: false,
-      anchor: anchorOutput,
-      message: 'The referenced file is missing in the current working tree.',
-    };
-  }
-
-  const text = fs.readFileSync(absolutePath, 'utf8');
-  const lines = text.split(/\r?\n/);
-  const lineHint = Number.parseInt(anchorOutput.line, 10);
-  const exactNeedles = literalNeedles(Array.isArray(hints.exactNeedles) ? hints.exactNeedles : []);
-  const requiresExactNeedle = Boolean(hints.requireExactNeedle);
-  const needles = exactNeedles.length > 0 || requiresExactNeedle
-    ? exactNeedles
-    : symbolNeedles(anchorOutput, hints);
-  const identityLabel = requiresExactNeedle ? 'Stored usage text' : 'Symbol identity';
-  const start = Math.max(1, lineHint - VERIFY_LINE_WINDOW);
-  const end = Math.min(lines.length, lineHint + VERIFY_LINE_WINDOW);
-  const windowLines = lines.slice(start - 1, end);
-  const lineInWindow = findNeedleLine(windowLines, needles);
-
-  if (lineInWindow !== null) {
-    const actualLine = start + lineInWindow - 1;
-    return {
-      status: actualLine === lineHint ? 'verified' : 'verified-near-line-hint',
-      ok: true,
-      anchor: anchorOutput,
-      actual_line: actualLine,
-      message: actualLine === lineHint
-        ? `${identityLabel} matched at the stored line hint.`
-        : `${identityLabel} matched near the stored line hint.`,
-    };
-  }
-
-  const relocatedLine = findNeedleLine(lines, needles);
-  if (relocatedLine !== null) {
-    return {
-      status: 'relocated',
-      ok: true,
-      anchor: anchorOutput,
-      actual_line: relocatedLine,
-      message: `${identityLabel} moved away from the stored line hint.`,
-    };
-  }
-
+  const row = rows[0];
   return {
-    status: 'stale-symbol',
-    ok: false,
-    anchor: anchorOutput,
-    message: requiresExactNeedle
-      ? 'The referenced file exists, but the stored usage text was not found.'
-      : 'The referenced file exists, but the symbol identity or snippet was not found.',
+    kind: 'artifact',
+    selector: row.selector,
+    summary: row.summary,
+    usage_notes: row.usage_notes,
+    limitations: row.limitations,
+    capability_tags: loadTagsForEntry(context, 'artifact', row.id),
+    priority: Number(row.priority),
+    language: row.language,
+    artifact_type: row.artifact_type,
+    framework: row.framework,
+    module_path: row.module_path,
+    source_anchor: parseStoredAnchor(row.source_anchor),
   };
 }
 
-function memberVerificationAnchors(member, labelPrefix) {
-  const signatures = Array.isArray(member.signatures) && member.signatures.length > 0
-    ? member.signatures
-    : [{
-      signature: member.signature,
-      source_anchor: member.source_anchor,
-    }];
-
-  return signatures.map((signature, index) => ({
-    label: `${labelPrefix}:signature:${index + 1}`,
-    anchor: signature.source_anchor,
-    hints: {
-      name: member.name,
-      signature: signature.signature,
-      exactNeedles: [signature.signature],
-      snippet: member.snippet,
+function loadExternalEntry(context, selector) {
+  const rows = runSqliteJson(context.dbPath, `
+SELECT
+  external_selectors.*,
+  utility_origins.origin_type,
+  utility_origins.display_name,
+  utility_origins.usage_count,
+  utility_origins.priority
+FROM external_selectors
+JOIN utility_origins ON utility_origins.id = external_selectors.origin_id
+WHERE external_selectors.project_id = ${sqlString(context.projectId)}
+  AND external_selectors.selector = ${sqlString(selector)}
+LIMIT 1;
+`, { readOnly: true });
+  if (rows.length === 0) {
+    return null;
+  }
+  const row = rows[0];
+  return {
+    kind: 'external',
+    selector: row.selector,
+    summary: row.summary,
+    usage_notes: row.usage_notes,
+    limitations: row.limitations,
+    capability_tags: loadTagsForEntry(context, 'external_selector', row.id),
+    priority: Number(row.priority),
+    language: row.language,
+    framework: row.framework,
+    origin: {
+      origin_key: row.origin_key,
+      origin_type: row.origin_type,
+      display_name: row.display_name,
+      usage_count: Number(row.usage_count ?? 0),
+      priority: Number(row.priority),
     },
-  }));
-}
-
-function verificationAnchors(entry) {
-  if (entry.kind === 'artifact') {
-    return [
-      {
-        label: 'artifact',
-        anchor: entry.source_anchor,
-        hints: {
-          name: entry.title,
-          snippet: entry.snippet,
-        },
-      },
-      ...entry.members.flatMap((member) => memberVerificationAnchors(member, `member:${member.name}`)),
-    ];
-  }
-  if (entry.kind === 'member') {
-    return memberVerificationAnchors(entry, 'member');
-  }
-  if (entry.kind === 'template_pattern') {
-    return entry.instances.map((instance, index) => ({
-      label: `instance:${index + 1}`,
-      anchor: instance.source_anchor,
-      hints: {
-        name: entry.identifier,
-        snippet: instance.snippet ?? entry.snippet,
-      },
-    }));
-  }
-  if (entry.kind === 'external_usage') {
-    const checks = [];
-    if (entry.import_text) {
-      checks.push({
-        label: 'external-usage:import',
-        anchor: entry.source_anchor,
-        hints: {
-          requireExactNeedle: true,
-          exactNeedles: [entry.import_text],
-        },
-      });
-    }
-    if (entry.call_text) {
-      checks.push({
-        label: 'external-usage:call',
-        anchor: entry.call_anchor ?? entry.source_anchor,
-        hints: {
-          requireExactNeedle: true,
-          exactNeedles: [
-            entry.call_text,
-            entry.snippet === entry.import_text ? null : entry.snippet,
-          ],
-        },
-      });
-    }
-    if (checks.length > 0) {
-      return checks;
-    }
-  }
-
-  return [];
-}
-
-function verifyCatalogEntry(context, entry) {
-  const checks = verificationAnchors(entry).map((item) => ({
-    label: item.label,
-    ...verifySourceAnchor(context.rootPath, item.anchor, item.hints),
-  }));
-
-  return {
-    status: checks.length > 0 && checks.every((check) => check.ok) ? 'verified' : 'stale-or-missing',
-    ok: checks.length > 0 && checks.every((check) => check.ok),
-    checks,
   };
+}
+
+function loadEntry(context, selector) {
+  if (selector.startsWith('artifact:')) {
+    return loadArtifactEntry(context, selector);
+  }
+  if (selector.startsWith('external:')) {
+    return loadExternalEntry(context, selector);
+  }
+  throw new ToolCatalogError(`Unsupported selector '${selector}'. Use artifact: or external:.`, 2);
 }
 
 function buildShowOutput(context, state, selector) {
   if (!state.readable) {
-    return buildUnavailableIndexOutput('tool_catalog_show', context, state);
+    return { ...unavailableOutput('tool_catalog_show', context, state), selector, found: false };
   }
-
-  const loaded = loadCatalogEntry(context, selector);
-  if (!loaded.found) {
-    return {
-      kind: 'tool_catalog_show',
-      version: 1,
-      generated_at: new Date().toISOString(),
-      index_mutated: false,
-      project: projectContextToOutput(context),
-      selector,
-      found: false,
-      message: loaded.message,
-      matches: loaded.entries.map((entry) => ({
-        selector: entry.selector,
-        kind: entry.kind,
-        title: entry.title,
-      })),
-      warnings: [loaded.message],
-    };
-  }
-
-  const verification = verifyCatalogEntry(context, loaded.entry);
+  const entry = loadEntry(context, selector);
   return {
     kind: 'tool_catalog_show',
-    version: 1,
+    version: 2,
     generated_at: new Date().toISOString(),
     index_mutated: false,
     project: projectContextToOutput(context),
     selector,
-    found: true,
-    entry: loaded.entry,
-    verification,
-    warnings: verification.ok ? [] : ['This entry has stale or missing source anchors; run discovery to refresh the index.'],
+    found: Boolean(entry),
+    entry,
+    warnings: entry ? [] : [`No catalog entry matched selector '${selector}'.`],
   };
-}
-
-function renderCapabilityTags(tags) {
-  if (!Array.isArray(tags) || tags.length === 0) {
-    return null;
-  }
-
-  return tags.map((tag) => `\`${tag.tag}\``).join(', ');
-}
-
-function renderSignatureLines(signatures, prefix = '- ') {
-  return (signatures ?? []).map((signature) => `${prefix}\`${signature.signature}\` at \`${signature.source_anchor?.text ?? 'n/a'}\``);
 }
 
 function renderShowMarkdown(output) {
@@ -6655,34 +1583,19 @@ function renderShowMarkdown(output) {
     '# Tool Catalog Show',
     '',
     `Project: \`${output.project.project_id}\``,
-    `Selector: \`${output.selector ?? 'n/a'}\``,
+    `Selector: \`${output.selector}\``,
     `Index mutated: \`${output.index_mutated ?? false}\``,
   ];
-
   if (!output.found) {
-    lines.push('', '## Entry', `- ${output.message ?? 'Entry not found.'}`);
-    if (output.matches?.length > 0) {
-      lines.push('', '## Matching Selectors');
-      for (const match of output.matches) {
-        lines.push(`- \`${match.selector}\` ${match.kind} ${match.title}`);
-      }
-    }
+    lines.push('', '## Entry', '- Not found.');
   } else {
     const entry = output.entry;
     lines.push('', '## Entry');
-    lines.push(`- Identifier: \`${entry.identifier}\``);
     lines.push(`- Kind: \`${entry.kind}\``);
-    lines.push(`- Title: ${entry.title}`);
-    lines.push(`- Source: \`${entry.source_anchor?.text ?? 'n/a'}\``);
-    if (entry.language || entry.framework) {
-      lines.push(`- Context: language \`${entry.language ?? 'n/a'}\`, framework \`${entry.framework ?? 'n/a'}\``);
-    }
-    if (entry.summary) {
-      lines.push(`- Use: ${entry.summary}`);
-    }
-    const entryTags = renderCapabilityTags(entry.capability_tags);
-    if (entryTags) {
-      lines.push(`- Tags: ${entryTags}`);
+    lines.push(`- Summary: ${entry.summary}`);
+    lines.push(`- Tags: ${entry.capability_tags.map((tag) => `\`${tag}\``).join(', ')}`);
+    if (entry.source_anchor) {
+      lines.push(`- Source: \`${entry.source_anchor.path}${entry.source_anchor.line ? `:${entry.source_anchor.line}` : ''}#${entry.source_anchor.symbol}\``);
     }
     if (entry.usage_notes) {
       lines.push(`- Usage notes: ${entry.usage_notes}`);
@@ -6690,79 +1603,68 @@ function renderShowMarkdown(output) {
     if (entry.limitations) {
       lines.push(`- Limitations: ${entry.limitations}`);
     }
-    if ((entry.signatures?.length ?? 0) > 1) {
-      lines.push(`- Signatures: ${entry.signatures.length}`);
-      lines.push(...renderSignatureLines(entry.signatures, '  - '));
-    } else if (entry.signature) {
-      lines.push(`- Example: \`${entry.signature}\``);
-    } else if (entry.snippet) {
-      lines.push(`- Example: \`${entry.snippet}\``);
-    }
     if (entry.origin) {
-      lines.push(`- Origin: \`${entry.origin.type}:${entry.origin.display_name ?? entry.origin.key ?? 'project'}\`, priority \`${entry.origin.priority ?? 'n/a'}\``);
-    }
-    if (entry.members?.length > 0) {
-      lines.push('', '## Members');
-      for (const member of entry.members.slice(0, 12)) {
-        const memberTags = renderCapabilityTags(member.capability_tags);
-        lines.push(`- \`${member.name}\` ${member.signature_count > 1 ? `${member.signature_count} signatures ` : member.signature ? `\`${member.signature}\` ` : ''}at \`${member.source_anchor?.text ?? 'n/a'}\`${memberTags ? `; tags ${memberTags}` : ''}`);
-        if (member.summary) {
-          lines.push(`  Use: ${member.summary}`);
-        }
-        if (member.signature_count > 1) {
-          lines.push(`  - Signatures: ${member.signature_count}`);
-          lines.push(...renderSignatureLines(member.signatures.slice(0, 4), '  - '));
-        }
-      }
-    }
-    if (entry.instances?.length > 0) {
-      lines.push('', '## Instances');
-      for (const instance of entry.instances.slice(0, 8)) {
-        lines.push(`- \`${instance.source_anchor?.text ?? 'n/a'}\`${instance.snippet ? ` example \`${instance.snippet}\`` : ''}`);
-      }
-    }
-    if (entry.import_text) {
-      lines.push('', '## Observed Usage');
-      lines.push(`- Import: \`${entry.import_text}\``);
-      if (entry.call_text) {
-        lines.push(`- Call: \`${entry.call_text}\``);
-      }
-    }
-    lines.push('', '## Verification');
-    for (const check of output.verification.checks) {
-      lines.push(`- \`${check.label}\` ${check.status}: ${check.message}`);
+      lines.push(`- Origin: \`${entry.origin.origin_key}\` (${entry.origin.display_name}, usage ${entry.origin.usage_count})`);
     }
   }
-
-  if (output.warnings?.length > 0) {
-    lines.push('', '## Notes');
-    for (const warning of output.warnings) {
-      lines.push(`- ${warning}`);
-    }
+  if (output.warnings?.length) {
+    lines.push('', '## Notes', ...output.warnings.map((warning) => `- ${warning}`));
   }
-
   return `${lines.join('\n')}\n`;
 }
 
-function printShowOutput(output, options) {
-  if (options.json) {
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
-    return;
+function verifyArtifactSource(rootPath, entry) {
+  const anchor = entry.source_anchor;
+  if (!anchor) {
+    return { ok: false, status: 'missing-anchor', checks: [] };
   }
-
-  process.stdout.write(renderShowMarkdown(output));
+  const absolutePath = path.resolve(rootPath, anchor.path);
+  const inside = !path.relative(rootPath, absolutePath).startsWith('..') && !path.isAbsolute(path.relative(rootPath, absolutePath));
+  if (!inside) {
+    return {
+      ok: false,
+      status: 'outside-root',
+      checks: [{ label: 'source_anchor', status: 'outside-root', ok: false, anchor }],
+    };
+  }
+  if (!fs.existsSync(absolutePath)) {
+    return {
+      ok: false,
+      status: 'missing-file',
+      checks: [{ label: 'source_anchor', status: 'missing-file', ok: false, anchor }],
+    };
+  }
+  const text = fs.readFileSync(absolutePath, 'utf8');
+  const line = anchor.line ? Number(anchor.line) : null;
+  const lineOk = line === null || line <= text.split(/\r?\n/).length;
+  return {
+    ok: lineOk,
+    status: lineOk ? 'verified' : 'stale-line',
+    checks: [{
+      label: 'source_anchor',
+      status: lineOk ? 'verified' : 'stale-line',
+      ok: lineOk,
+      anchor,
+      message: lineOk ? 'Source file exists in the current working tree.' : 'Source file exists but line hint is outside the file.',
+    }],
+  };
 }
 
 function buildVerifyOutput(context, state, selector) {
-  if (!state.readable) {
-    return buildUnavailableIndexOutput('tool_catalog_verify', context, state);
+  if (selector.startsWith('external:')) {
+    throw new ToolCatalogError('verify accepts only project-owned artifact: selectors. External selectors must be checked by the agent.', 2);
   }
-
-  const loaded = loadCatalogEntry(context, selector);
-  if (!loaded.found) {
+  if (!selector.startsWith('artifact:')) {
+    throw new ToolCatalogError('verify accepts only artifact: selectors.', 2);
+  }
+  if (!state.readable) {
+    return { ...unavailableOutput('tool_catalog_verify', context, state), selector, found: false, ok: false, status: state.reason };
+  }
+  const entry = loadArtifactEntry(context, selector);
+  if (!entry) {
     return {
       kind: 'tool_catalog_verify',
-      version: 1,
+      version: 2,
       generated_at: new Date().toISOString(),
       index_mutated: false,
       project: projectContextToOutput(context),
@@ -6771,29 +1673,24 @@ function buildVerifyOutput(context, state, selector) {
       ok: false,
       status: 'missing-entry',
       checks: [],
-      warnings: [loaded.message],
+      warnings: [`No catalog entry matched selector '${selector}'.`],
     };
   }
-
-  const verification = verifyCatalogEntry(context, loaded.entry);
+  const verification = verifyArtifactSource(context.rootPath, entry);
   return {
     kind: 'tool_catalog_verify',
-    version: 1,
+    version: 2,
     generated_at: new Date().toISOString(),
     index_mutated: false,
     project: projectContextToOutput(context),
     selector,
     found: true,
     entry: {
-      selector: loaded.entry.selector,
-      kind: loaded.entry.kind,
-      identifier: loaded.entry.identifier,
-      title: loaded.entry.title,
+      selector: entry.selector,
+      kind: entry.kind,
     },
-    ok: verification.ok,
-    status: verification.status,
-    checks: verification.checks,
-    warnings: verification.ok ? [] : ['One or more source anchors are stale or missing; refresh the index through discovery.'],
+    ...verification,
+    warnings: verification.ok ? [] : ['Stored source anchor is stale or missing; rerun discovery.'],
   };
 }
 
@@ -6802,39 +1699,31 @@ function renderVerifyMarkdown(output) {
     '# Tool Catalog Verify',
     '',
     `Project: \`${output.project.project_id}\``,
-    `Selector: \`${output.selector ?? 'n/a'}\``,
-    `Status: \`${output.status ?? 'n/a'}\``,
+    `Selector: \`${output.selector}\``,
+    `Status: \`${output.status}\``,
     `Index mutated: \`${output.index_mutated ?? false}\``,
     '',
     '## Checks',
   ];
-
-  if (!output.checks || output.checks.length === 0) {
+  if (!output.checks?.length) {
     lines.push('- None.');
   } else {
     for (const check of output.checks) {
-      lines.push(`- \`${check.label}\` ${check.status}: ${check.anchor?.text ?? 'n/a'}${check.actual_line ? ` -> line ${check.actual_line}` : ''}`);
-      lines.push(`  ${check.message}`);
+      lines.push(`- \`${check.label}\` ${check.status}: \`${check.anchor?.path ?? 'n/a'}\``);
     }
   }
-
-  if (output.warnings?.length > 0) {
-    lines.push('', '## Notes');
-    for (const warning of output.warnings) {
-      lines.push(`- ${warning}`);
-    }
+  if (output.warnings?.length) {
+    lines.push('', '## Notes', ...output.warnings.map((warning) => `- ${warning}`));
   }
-
   return `${lines.join('\n')}\n`;
 }
 
-function printVerifyOutput(output, options) {
+function printOutput(output, options, renderer) {
   if (options.json) {
-    process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+    print(JSON.stringify(output, null, 2));
     return;
   }
-
-  process.stdout.write(renderVerifyMarkdown(output));
+  process.stdout.write(renderer(output));
 }
 
 function handleConfigProjectId(args, options) {
@@ -6842,19 +1731,40 @@ function handleConfigProjectId(args, options) {
   if (!projectId) {
     throw new ToolCatalogError('Missing project id. Usage: tool-catalog config project-id <id> [--root <path>]', 2);
   }
-
   assertValidProjectId(projectId);
   const catalogHome = getCatalogHome();
   const rootPath = resolveTargetRoot(options);
-  const signals = buildIdentitySignals(rootPath);
   const config = readUserConfig(catalogHome);
-  const nextConfig = setExplicitProjectId(config, rootPath, signals, projectId);
-  const context = createProjectContext(options, nextConfig);
-
+  config.projects[mappingKey(rootPath)] = {
+    project_id: projectId,
+    root_path: rootPath,
+    updated_at: new Date().toISOString(),
+  };
+  const context = createProjectContext(options, config);
   ensureProjectIndex(context);
-  writeUserConfig(catalogHome, nextConfig);
+  writeUserConfig(catalogHome, config);
   printProjectContext(context, options, `Configured Tool Catalog project id '${projectId}'.`);
   return 0;
+}
+
+function printProjectContext(context, options, leadLine = 'Resolved Tool Catalog project index.') {
+  const output = {
+    kind: 'tool_catalog_project',
+    version: 1,
+    project: projectContextToOutput(context),
+    index_mutated: true,
+  };
+  if (options.json) {
+    print(JSON.stringify(output, null, 2));
+    return;
+  }
+  print(`# Tool Catalog Project
+
+${leadLine}
+
+- Project: \`${context.projectId}\`
+- Root: \`${context.rootPath}\`
+- Index: \`${context.dbPath}\``);
 }
 
 function handleConfigInfo(options) {
@@ -6868,106 +1778,90 @@ function handleConfigInfo(options) {
 
 function handleConfigCommand(args, options) {
   const subcommand = args[0] ?? 'help';
-  const subcommandArgs = args.slice(1);
-
   if (options.help || subcommand === 'help') {
-    printConfigHelp();
+    print(CONFIG_HELP_TEXT);
     return 0;
   }
-
   if (subcommand === 'project-id') {
-    return handleConfigProjectId(subcommandArgs, options);
+    return handleConfigProjectId(args.slice(1), options);
   }
-
   if (subcommand === 'info') {
     return handleConfigInfo(options);
   }
-
   throw new ToolCatalogError(`Unsupported Tool Catalog config command: ${subcommand}`, 2);
-}
-
-function handleDiscoverApply(discoverOptions) {
-  const { data } = readJsonFile(discoverOptions.applyPath);
-  const decisions = normalizeApplyDecisions(data);
-  const catalogHome = getCatalogHome();
-  const config = readUserConfig(catalogHome);
-  const context = createProjectContext(discoverOptions, config);
-  const summary = applyDiscoveryDecisions(context, decisions);
-  printDiscoveryApplySummary(summary, discoverOptions);
-  return 0;
 }
 
 function handleDiscoverCommand(args, options) {
   const discoverOptions = parseDiscoverOptions(args, options);
   if (discoverOptions.help) {
-    printDiscoverHelp();
+    print(DISCOVER_HELP_TEXT);
     return 0;
   }
-  if (discoverOptions.applyPath) {
-    return handleDiscoverApply(discoverOptions);
-  }
-
+  const data = readJsonFile(discoverOptions.applyPath);
+  const decisionFile = normalizeDecisionFile(data);
   const catalogHome = getCatalogHome();
   const config = readUserConfig(catalogHome);
   const context = createProjectContext(discoverOptions, config);
-  const output = writeDiscoveryRunFiles(context, buildDiscoveryDryRun(context, discoverOptions));
-  printDiscoveryDryRun(output, discoverOptions);
+  const summary = applyDiscoveryDecisionFile(context, decisionFile);
+  printOutput(summary, discoverOptions, renderApplyMarkdown);
   return 0;
+}
+
+function createConsultContext(options) {
+  const catalogHome = getCatalogHome();
+  const config = readUserConfig(catalogHome);
+  return createProjectContext(options, config);
 }
 
 function handleTagsCommand(args, options) {
   const tagsOptions = parseTagsOptions(args, options);
   if (tagsOptions.help) {
-    printTagsHelp();
+    print(TAGS_HELP_TEXT);
     return 0;
   }
-
   const context = createConsultContext(tagsOptions);
   const state = consultIndexState(context);
   const output = buildTagsOutput(context, state);
-  printTagsOutput(output, tagsOptions);
+  printOutput(output, tagsOptions, renderTagsMarkdown);
   return state.readable ? 0 : 1;
 }
 
 function handleQueryCommand(args, options) {
   const queryOptions = parseQueryOptions(args, options);
   if (queryOptions.help) {
-    printQueryHelp();
+    print(QUERY_HELP_TEXT);
     return 0;
   }
-
   const context = createConsultContext(queryOptions);
   const state = consultIndexState(context);
   const output = buildQueryOutput(context, state, queryOptions);
-  printQueryOutput(output, queryOptions);
+  printOutput(output, queryOptions, renderQueryMarkdown);
   return state.readable ? 0 : 1;
 }
 
 function handleShowCommand(args, options) {
   const showOptions = parseSelectorCommandOptions(args, options, 'show');
   if (showOptions.help) {
-    printShowHelp();
+    print(SHOW_HELP_TEXT);
     return 0;
   }
-
   const context = createConsultContext(showOptions);
   const state = consultIndexState(context);
   const output = buildShowOutput(context, state, showOptions.selector);
-  printShowOutput(output, showOptions);
+  printOutput(output, showOptions, renderShowMarkdown);
   return state.readable && output.found ? 0 : 1;
 }
 
 function handleVerifyCommand(args, options) {
   const verifyOptions = parseSelectorCommandOptions(args, options, 'verify');
   if (verifyOptions.help) {
-    printVerifyHelp();
+    print(VERIFY_HELP_TEXT);
     return 0;
   }
-
   const context = createConsultContext(verifyOptions);
   const state = consultIndexState(context);
   const output = buildVerifyOutput(context, state, verifyOptions.selector);
-  printVerifyOutput(output, verifyOptions);
+  printOutput(output, verifyOptions, renderVerifyMarkdown);
   return state.readable && output.ok ? 0 : 1;
 }
 
@@ -6982,20 +1876,16 @@ function main(argv) {
     }
     throw error;
   }
-
   const { options, positional } = parsed;
   const command = positional[0] ?? (options.help ? 'help' : '--help');
   const commandArgs = positional.slice(1);
-
   if (command === '--help' || command === '-h' || command === 'help') {
-    printHelp();
+    print(HELP_TEXT);
     return 0;
   }
-
   if (command === 'doctor' || command === 'check-runtime') {
     return checkRuntime() ? 0 : 1;
   }
-
   try {
     if (command === 'config') {
       return handleConfigCommand(commandArgs, options);
@@ -7022,9 +1912,7 @@ function main(argv) {
     }
     throw error;
   }
-
   process.stderr.write(`Unsupported Tool Catalog CLI command: ${command}\n`);
-  process.stderr.write('Run `tool-catalog --help` for the available commands.\n');
   return 2;
 }
 

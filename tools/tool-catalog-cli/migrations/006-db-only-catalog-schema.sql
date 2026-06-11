@@ -1,24 +1,26 @@
-PRAGMA foreign_keys = ON;
+PRAGMA foreign_keys = OFF;
 
 BEGIN IMMEDIATE;
 
-CREATE TABLE IF NOT EXISTS metadata (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+DROP TABLE IF EXISTS entry_capability_tags;
+DROP TABLE IF EXISTS capability_tags;
+DROP TABLE IF EXISTS discovery_fingerprints;
+DROP TABLE IF EXISTS suppressions;
+DROP TABLE IF EXISTS external_selectors;
+DROP TABLE IF EXISTS artifacts;
+DROP TABLE IF EXISTS utility_origins;
 
-CREATE TABLE IF NOT EXISTS projects (
-  id TEXT PRIMARY KEY,
-  root_path TEXT NOT NULL,
-  identity_source TEXT NOT NULL,
-  identity_key TEXT NOT NULL,
-  catalog_home TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+DROP TABLE IF EXISTS origin_priorities;
+DROP TABLE IF EXISTS artifact_members;
+DROP TABLE IF EXISTS member_signatures;
+DROP TABLE IF EXISTS template_instances;
+DROP TABLE IF EXISTS template_patterns;
+DROP TABLE IF EXISTS observed_external_usages;
+DROP TABLE IF EXISTS ignored_candidates;
+DROP TABLE IF EXISTS deferred_candidates;
+DROP TABLE IF EXISTS fts_entries;
 
-CREATE TABLE IF NOT EXISTS utility_origins (
+CREATE TABLE utility_origins (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   origin_key TEXT NOT NULL,
@@ -31,7 +33,7 @@ CREATE TABLE IF NOT EXISTS utility_origins (
   UNIQUE(project_id, origin_key)
 );
 
-CREATE TABLE IF NOT EXISTS artifacts (
+CREATE TABLE artifacts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   selector TEXT NOT NULL,
@@ -49,7 +51,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
   UNIQUE(project_id, selector)
 );
 
-CREATE TABLE IF NOT EXISTS external_selectors (
+CREATE TABLE external_selectors (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   selector TEXT NOT NULL,
@@ -65,7 +67,7 @@ CREATE TABLE IF NOT EXISTS external_selectors (
   UNIQUE(project_id, selector)
 );
 
-CREATE TABLE IF NOT EXISTS suppressions (
+CREATE TABLE suppressions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   suppression_key TEXT NOT NULL,
@@ -78,7 +80,7 @@ CREATE TABLE IF NOT EXISTS suppressions (
   UNIQUE(project_id, suppression_key)
 );
 
-CREATE TABLE IF NOT EXISTS discovery_fingerprints (
+CREATE TABLE discovery_fingerprints (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   fingerprint_key TEXT NOT NULL,
@@ -90,7 +92,7 @@ CREATE TABLE IF NOT EXISTS discovery_fingerprints (
   UNIQUE(project_id, fingerprint_key)
 );
 
-CREATE TABLE IF NOT EXISTS capability_tags (
+CREATE TABLE capability_tags (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   tag TEXT NOT NULL,
@@ -99,7 +101,7 @@ CREATE TABLE IF NOT EXISTS capability_tags (
   UNIQUE(project_id, tag)
 );
 
-CREATE TABLE IF NOT EXISTS entry_capability_tags (
+CREATE TABLE entry_capability_tags (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   entry_type TEXT NOT NULL,
@@ -109,25 +111,27 @@ CREATE TABLE IF NOT EXISTS entry_capability_tags (
   UNIQUE(project_id, entry_type, entry_id, tag_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_artifacts_project_priority
+CREATE INDEX idx_artifacts_project_priority
 ON artifacts(project_id, priority, selector);
 
-CREATE INDEX IF NOT EXISTS idx_external_selectors_project_origin
+CREATE INDEX idx_external_selectors_project_origin
 ON external_selectors(project_id, origin_id, selector);
 
-CREATE INDEX IF NOT EXISTS idx_origins_project_priority
+CREATE INDEX idx_origins_project_priority
 ON utility_origins(project_id, priority, origin_key);
 
-CREATE INDEX IF NOT EXISTS idx_entry_capability_tags_entry
+CREATE INDEX idx_entry_capability_tags_entry
 ON entry_capability_tags(project_id, entry_type, entry_id);
 
-CREATE INDEX IF NOT EXISTS idx_entry_capability_tags_tag
+CREATE INDEX idx_entry_capability_tags_tag
 ON entry_capability_tags(project_id, tag_id);
 
 INSERT INTO metadata (key, value, updated_at)
-VALUES ('schema_version', '1', datetime('now'))
+VALUES ('schema_version', '6', datetime('now'))
 ON CONFLICT(key) DO UPDATE SET
   value = excluded.value,
   updated_at = excluded.updated_at;
 
 COMMIT;
+
+PRAGMA foreign_keys = ON;

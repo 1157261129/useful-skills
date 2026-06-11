@@ -19,33 +19,32 @@ const repoRoot = path.resolve(scriptDir, '..');
 const skillsDir = path.join(repoRoot, 'skills');
 const cliPath = path.join(repoRoot, 'tools/tool-catalog-cli/bin/tool-catalog.mjs');
 
-const toolCatalogSkills = [
-  'tool-catalog-discover',
-  'tool-catalog-consult',
-];
-
-const discoveryTerminologyDocs = [
-  'docs/adr/0003-discovery-workflow-and-scanning.md',
-];
-
-const disallowedDiscoveryArtifactPhrases = [
-  /\bDiscovery candidate data\b/i,
-  /\bfull candidate data\b/i,
-  /\bcompat-candidates\.json\b/i,
-];
-
 const documentedCommands = [
   'tool-catalog doctor',
   'tool-catalog config project-id <id>',
   'tool-catalog config info',
-  'tool-catalog discover --full --dry-run',
-  'tool-catalog discover --changed <paths...> --dry-run',
   'tool-catalog discover --apply <decisions.json>',
   'tool-catalog tags',
-  'tool-catalog query --tag <tag> --goal <text>',
-  'tool-catalog query --goal <text>',
+  'tool-catalog query --tag <tag>',
+  'tool-catalog query --description <text>',
   'tool-catalog show <selector>',
   'tool-catalog verify <selector>',
+];
+
+const forbiddenTerms = [
+  'tool-catalog discover --full --dry-run',
+  'tool-catalog discover --changed <paths...> --dry-run',
+  'query --goal',
+  '--goal <text>',
+  'member:',
+  'template:',
+  'template pattern',
+  'observed external usage row',
+  'deferred_candidates',
+  'artifact_members',
+  'member_signatures',
+  'template_patterns',
+  'observed_external_usages',
 ];
 
 function run(command, args, options = {}) {
@@ -79,27 +78,11 @@ function parseFrontmatter(text, filePath) {
 }
 
 function assertIncludes(text, expected, label) {
-  assert(
-    text.includes(expected),
-    `${label} must include ${expected}`,
-  );
+  assert(text.includes(expected), `${label} must include ${expected}`);
 }
 
-function assertOrderedIncludes(text, expectedEntries, label) {
-  let previousIndex = -1;
-  for (const expected of expectedEntries) {
-    const index = text.indexOf(expected);
-    assert(index >= 0, `${label} must include ${expected}`);
-    assert(index > previousIndex, `${label} must keep ${expected} after the previous required stage`);
-    previousIndex = index;
-  }
-}
-
-function assertExcludes(text, pattern, label, message) {
-  assert(
-    !pattern.test(text),
-    `${label} ${message}`,
-  );
+function assertExcludes(text, forbidden, label) {
+  assert(!text.includes(forbidden), `${label} must not include ${forbidden}`);
 }
 
 function checkSkillFrontmatter() {
@@ -117,246 +100,59 @@ function checkSkillFrontmatter() {
   }
 }
 
-function checkToolCatalogSkillDocs() {
+function checkToolCatalogDocs() {
+  const readme = readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
+  const context = readFileSync(path.join(repoRoot, 'CONTEXT.md'), 'utf8');
+  const adr1 = readFileSync(path.join(repoRoot, 'docs/adr/0001-project-index-storage-and-schema.md'), 'utf8');
+  const adr2 = readFileSync(path.join(repoRoot, 'docs/adr/0002-skill-cli-contracts-and-output.md'), 'utf8');
+  const adr3 = readFileSync(path.join(repoRoot, 'docs/adr/0003-discovery-workflow-and-scanning.md'), 'utf8');
+  const adr4 = readFileSync(path.join(repoRoot, 'docs/adr/0004-consulting-workflow.md'), 'utf8');
   const discover = readFileSync(path.join(skillsDir, 'tool-catalog-discover/SKILL.md'), 'utf8');
   const consult = readFileSync(path.join(skillsDir, 'tool-catalog-consult/SKILL.md'), 'utf8');
-  const evidencePackValidator = path.join(skillsDir, 'tool-catalog-discover/scripts/validate-evidence-pack.mjs');
-  assert(existsSync(evidencePackValidator), 'tool-catalog-discover Evidence Pack validator must exist');
+  const allDocs = `${readme}\n${context}\n${adr1}\n${adr2}\n${adr3}\n${adr4}\n${discover}\n${consult}`;
 
-  for (const skillName of toolCatalogSkills) {
-    const text = readFileSync(path.join(skillsDir, skillName, 'SKILL.md'), 'utf8');
-    const frontmatter = parseFrontmatter(text, skillName);
-    assertIncludes(frontmatter.description, 'Use when', `${skillName} description`);
-    assert(text.split(/\r?\n/).length <= 100, `${skillName} SKILL.md must stay concise`);
-    assert(!/\bStub\b|Until .*implemented/i.test(text), `${skillName} must not contain placeholder workflow text`);
-    assertIncludes(text, '../tool-catalog-cli/bin/tool-catalog', `${skillName} CLI reference`);
+  for (const command of documentedCommands) {
+    assertIncludes(allDocs, command, 'Tool Catalog documentation');
+  }
+  for (const forbidden of forbiddenTerms) {
+    assertExcludes(readme, forbidden, 'README');
+    assertExcludes(discover, forbidden, 'tool-catalog-discover');
+    assertExcludes(consult, forbidden, 'tool-catalog-consult');
   }
 
   for (const expected of [
-    'discover --full --dry-run',
-    'discover --changed <paths...> --dry-run',
-    'discover --apply <decisions.json>',
-    'two-phase Tool Catalog CLI workflow',
-    'durable run directory',
-    'Artifact Sanity Gate',
-    'Finding Evidence Pack',
-    'node scripts/validate-evidence-pack.mjs <finding-manifest.json> --json',
-    'manifest.run_files.run_id',
-    'finding-index.items[]',
-    "active surface's subagent dispatch tools",
-    'The main agent runs Evidence Harvest and the Artifact Sanity Gate. The worker DAG starts at the Shard Planner Worker.',
-    'The main agent is the only dispatcher.',
-    'Default worker concurrency is at most 2.',
-    'Maintain a ready queue',
-    'fill open dispatch capacity immediately',
-    'review and merge workers may prefer economical models',
-    'finalizer, review, and repair profiles increase model strength or `reasoning_effort`',
-    'Do not statically assign every worker to a strong model.',
-    '`model` and `reasoning_effort`',
-    'workers must not spawn subagents',
-    'strict Markdown work plans',
-    '`work_item_id`',
-    '`role`',
-    '`depends_on`',
-    '`brief`',
-    '`inputs`',
-    '`outputs`',
-    '`coverage`',
-    'Minimal `status.md`',
-    '`terminal_status`',
-    '`outcome`',
-    '`artifacts`',
-    '`readiness`',
-    '`next_worker`',
+    'The Tool Catalog CLI performs deterministic Project Index database operations',
     'Discovery Decision File',
-    'relative source anchors',
-    'Narrative reports are not required.',
-    'Shard Planner Worker',
-    'Chunk Planner Worker',
-    'Shard Review Worker',
-    'Shard Aggregator Worker',
-    'Cross-Shard Merge Worker',
-    'Catalog Finalizer Worker',
-    'Decision Review Worker',
-    'Finalizer Repair Worker',
-    'Decision Incorporation Worker',
-    'Apply/Verify Worker',
-    'bounded worker inputs',
-    'coverage accounting',
-    'missing or duplicate Finding coverage',
-    'validate local anchors',
-    'accept/ignore/defer',
-    'semantic tags',
-    'usage notes',
-    'duplicate suggestions',
-    'every Review Group considered for acceptance',
-    'must not modify the Discovery Decision File',
-    'blocking decision needed',
-    'review-only mode',
-    'Shard Planner Worker must not over-split',
-    'prefer directory, module, and language shards',
-    'recurse to chunking only when bounded input limits require it',
+    'external_selectors',
+    'origins[].usage_count',
+    'Do not write `source_anchor` on `external_selectors[]`',
+    'Priority values are integers where lower numeric values mean higher priority',
+    'query output as a minimal ranked list',
+    '`verify` accepts only project-owned `artifact:` selectors',
   ]) {
-    assertIncludes(discover, expected, 'tool-catalog-discover');
-  }
-
-  assertIncludes(
-    discover,
-    'Every work plan must include these fields exactly once per work item: `work_item_id`, `role`, `depends_on`, `brief`, `inputs`, `outputs`, and `coverage`.',
-    'tool-catalog-discover work plan contract',
-  );
-  assertIncludes(
-    discover,
-    'The dispatcher writes root `status.md`; every worker writes a concise terminal `workers/<work_item_id>/status.md`.',
-    'tool-catalog-discover status path contract',
-  );
-  assertIncludes(
-    discover,
-    '`status.md` must record `terminal_status`, `outcome`, `artifacts`, `readiness`, and `next_worker`.',
-    'tool-catalog-discover status contract',
-  );
-  assertIncludes(
-    discover,
-    '`terminal_status` is one of `completed`, `failed`, or `blocked`.',
-    'tool-catalog-discover terminal status values',
-  );
-  assertIncludes(
-    discover,
-    'The oversized planning chain is fixed: harvest manifest/index -> Shard Planner -> Chunk Planner when a shard stays oversized -> bounded shard/chunk review inputs -> Shard Aggregator -> Cross-Shard Merge.',
-    'tool-catalog-discover oversized planning chain',
-  );
-  assertIncludes(
-    discover,
-    'route any oversized shard to a Chunk Planner Worker instead of one oversized prompt.',
-    'tool-catalog-discover shard planner handoff',
-  );
-  assertIncludes(
-    discover,
-    'recursively split one oversized shard into bounded child work items',
-    'tool-catalog-discover chunk recursion contract',
-  );
-  assertIncludes(
-    discover,
-    'merge reviewed chunks back into one shard artifact',
-    'tool-catalog-discover shard aggregation contract',
-  );
-  assertIncludes(
-    discover,
-    'fail the shard if `coverage` shows missing or duplicate Finding coverage.',
-    'tool-catalog-discover coverage gate',
-  );
-  assertIncludes(
-    discover,
-    'run mandatory local gap audit for every Review Group considered for acceptance',
-    'tool-catalog-discover local gap audit gate',
-  );
-  assertIncludes(
-    discover,
-    'must not modify the Discovery Decision File',
-    'tool-catalog-discover decision review immutability',
-  );
-  assertIncludes(
-    discover,
-    'send the run back to the Decision Review Worker',
-    'tool-catalog-discover repair re-review loop',
-  );
-  assertIncludes(
-    discover,
-    'after explicit user direction on blocking findings, incorporate that decision into the Discovery Decision File and return the run to the Decision Review Worker.',
-    'tool-catalog-discover user decision incorporation loop',
-  );
-  assertIncludes(
-    discover,
-    'run by default only after the Decision Review Worker passes with no blockers, unless the user explicitly requested review-only mode',
-    'tool-catalog-discover apply default gate',
-  );
-  assertOrderedIncludes(
-    discover,
-    [
-      'Shard Planner Worker:',
-      'Chunk Planner Worker:',
-      'Shard Review Worker:',
-      'Shard Aggregator Worker:',
-      'Cross-Shard Merge Worker:',
-      'Catalog Finalizer Worker:',
-      'Decision Review Worker:',
-      'Finalizer Repair Worker:',
-      'Decision Incorporation Worker:',
-      'Apply/Verify Worker:',
-    ],
-    'tool-catalog-discover worker flow',
-  );
-
-  assertExcludes(
-    discover,
-    /\bcandidate(s)?\b/i,
-    'tool-catalog-discover',
-    'must not use superseded candidate-centric discovery wording',
-  );
-
-  for (const relativePath of discoveryTerminologyDocs) {
-    const documentText = readFileSync(path.join(repoRoot, relativePath), 'utf8');
-    for (const pattern of disallowedDiscoveryArtifactPhrases) {
-      assertExcludes(
-        documentText,
-        pattern,
-        relativePath,
-        'must not use superseded candidate-centric discovery artifact wording',
-      );
-    }
-  }
-
-  for (const expected of [
-    'tool-catalog tags --root <project>',
-    'query --tag <tag>',
-    'query --goal',
-    'show <selector>',
-    'verify <selector>',
-    'Capability Tag Vocabulary',
-    'strict tag filters',
-    'Read-Only Rules',
-    'source anchors',
-    'broaden once without tag filters',
-  ]) {
-    assertIncludes(consult, expected, 'tool-catalog-consult');
+    assertIncludes(allDocs, expected, 'Tool Catalog documentation');
   }
 }
 
-function checkDocumentedCommandAvailability() {
-  const readme = readFileSync(path.join(repoRoot, 'README.md'), 'utf8');
-  const discover = readFileSync(path.join(skillsDir, 'tool-catalog-discover/SKILL.md'), 'utf8');
-  const consult = readFileSync(path.join(skillsDir, 'tool-catalog-consult/SKILL.md'), 'utf8');
-  const cliSource = readFileSync(cliPath, 'utf8');
-  const documentedText = `${readme}\n${discover}\n${consult}`;
+function checkCliHelp() {
   const help = run(process.execPath, [cliPath, '--help']).stdout;
-
-  for (const command of documentedCommands) {
-    assertIncludes(documentedText, command, 'Tool Catalog documentation');
-  }
-
-  assertIncludes(readme, 'Evidence Harvest', 'README Tool Catalog workflow');
-  assertIncludes(readme, 'finding-manifest.json', 'README Tool Catalog workflow');
-  assertIncludes(readme, 'worker DAG', 'README Tool Catalog workflow');
-  assertIncludes(readme, 'Discovery Decision File', 'README Tool Catalog workflow');
-  assertIncludes(readme, 'Capability Tag Vocabulary', 'README Tool Catalog workflow');
-  assertIncludes(readme, 'exact `--tag` filters', 'README Tool Catalog workflow');
-  assert(!readme.includes('Planned Capability Tag command surface'), 'README must describe implemented Tool Catalog commands, not planned placeholders');
-  assert(!cliSource.includes('compat-candidates.json'), 'CLI must not emit legacy compatibility discovery artifacts');
-
   for (const expected of [
-    'doctor',
-    'config project-id <id>',
-    'config info',
-    'discover --full --dry-run',
-    'discover --changed <paths...> --dry-run',
-    'discover --apply <decisions.json>',
-    'tool-catalog tags [--root <path>] [--json]',
-    'tool-catalog query --tag <tag> --goal <text>',
-    'query --goal <text>',
-    'show <selector>',
-    'verify <selector>',
+    'tool-catalog discover --apply <decisions.json>',
+    'tool-catalog query --tag <tag>',
+    'tool-catalog query --description <text>',
+    'default to 5',
+    'artifact:<fully-qualified-class-or-relative-module>',
+    'external:<fully-qualified-class-or-module>',
   ]) {
     assertIncludes(help, expected, 'Tool Catalog help');
+  }
+  for (const forbidden of [
+    '--goal',
+    '--dry-run',
+    'member:',
+    'template:',
+  ]) {
+    assertExcludes(help, forbidden, 'Tool Catalog help');
   }
 
   run(process.execPath, [cliPath, 'config', '--help']);
@@ -385,6 +181,7 @@ function checkSharedCliInstall() {
       assert(existsSync(path.join(installedCli, 'bin/tool-catalog')), `Missing installed wrapper in ${targetRoot}`);
       assert(existsSync(path.join(installedCli, 'bin/tool-catalog.mjs')), `Missing installed CLI in ${targetRoot}`);
       assert(existsSync(path.join(installedCli, 'migrations/001-initial-schema.sql')), `Missing installed migrations in ${targetRoot}`);
+      assert(existsSync(path.join(installedCli, 'migrations/006-db-only-catalog-schema.sql')), `Missing final migration in ${targetRoot}`);
       assert(!existsSync(path.join(targetRoot, 'tool-catalog-discover/tool-catalog-cli')), 'CLI must be a sibling of skills, not nested in discover');
       assert(!existsSync(path.join(targetRoot, 'tool-catalog-consult/tool-catalog-cli')), 'CLI must be a sibling of skills, not nested in consult');
       assert((statSync(path.join(installedCli, 'bin/tool-catalog')).mode & 0o111) !== 0, 'Installed wrapper must be executable');
@@ -395,8 +192,8 @@ function checkSharedCliInstall() {
 }
 
 checkSkillFrontmatter();
-checkToolCatalogSkillDocs();
-checkDocumentedCommandAvailability();
+checkToolCatalogDocs();
+checkCliHelp();
 checkSharedCliInstall();
 
 process.stdout.write('Tool Catalog skill static checks passed.\n');

@@ -17,52 +17,60 @@ Consequences:
 
 ## ADR 0002: Use a Project-Level Index Without Working Tree Snapshots
 
-The tool catalog keeps one project-level index for a target project and does not maintain separate visibility snapshots for each working tree. Utility classes and recurring template code are expected to change rarely, so stale or branch-specific edge cases are handled by the consulting agent when it verifies a referenced file or symbol.
+The tool catalog keeps one project-level index for a target project and does not maintain separate visibility snapshots for each working tree. Utility artifacts are expected to change rarely, so stale or branch-specific edge cases are handled by the consulting agent when it verifies referenced project-owned source anchors or independently checks external selectors.
 
 Consequences:
 
 - Re-discovery may remove entries that are absent from the scanned working tree even if they exist in another working tree.
-- The consulting workflow must treat index results as navigation aids and verify the current file or symbol before using them in code.
+- The consulting workflow must treat index results as navigation aids, verify project-owned source anchors before using them in code, and check external selector availability through project dependencies and local conventions.
 
-## ADR 0012: Use SQLite FTS Without Embeddings
+## ADR 0012: Use Deterministic Local Text Lookup Without Embeddings
 
-The first version uses SQLite relational tables and full-text search for catalog lookup, not embeddings or vector search. Agents refine queries with structured filters and goal keywords, while the CLI keeps ranking explainable and local.
+The first version uses SQLite relational tables and deterministic text matching over persisted catalog prose for lookup, not embeddings, vector search, or query-time LLM scoring. Agents refine queries with structured tags and description text, while the CLI keeps ranking explainable and local.
 
 Consequences:
 
 - No model or vector index dependency is required for catalog lookup.
-- Query quality depends on concise catalog prose, tags, signatures, and iterative agent refinement.
+- Query quality depends on concise catalog prose, tags, stable class or module identifiers, and iterative agent refinement.
 
-## ADR 0018: Index Artifacts and Members
+## ADR 0018: Index Utility Artifacts Only
 
-The project index stores both utility artifacts and their callable members. Query results prefer the most relevant member while preserving the owning artifact, origin, language, framework, and file anchors.
-
-Consequences:
-
-- Agents can identify the exact method or exported function to call.
-- Artifact-level context remains available for origin priority, broader inspection, and show results.
-- Accepting a utility artifact does not imply indexing every callable member. Discovery agents select reusable public members and exclude deprecated, internal, compatibility-only, or business-specific methods.
-- Overloaded methods are represented as one logical member with multiple signatures and source anchors, so consulting results stay capability-oriented without losing call details.
-- Multiple overload signatures are stored in a dedicated `member_signatures` table rather than a JSON blob on the member row.
-
-## ADR 0019: Index Template Patterns and Instances
-
-Template code is indexed as reusable patterns with representative instances. Query results return the pattern summary and a small number of examples, while show results can expose the broader instance set.
+The project index stores reusable utilities only at the utility class or module layer. It does not store callable members, method signatures, overloads, or function-level selectors.
 
 Consequences:
 
-- Template queries stay compact enough for agents to use during coding.
-- Instance references preserve concrete examples without turning the catalog into a clone dump.
+- Agents receive the utility class or module identity and inspect source or dependency APIs themselves to choose the exact method or function.
+- Project-owned priorities live with artifacts; external utility priorities live with utility origins.
+- Agent-facing selectors use the stable class or module identity directly: `artifact:<fully-qualified-class-or-relative-module>` and `external:<fully-qualified-class-or-module>`.
+- Java project artifacts use class FQCNs, such as `artifact:com.example.util.DateUtils`; TypeScript, JavaScript, and Vue project artifacts use target-project-relative module paths without file extensions, such as `artifact:src/utils/date`.
+- Package aliases, barrel exports, hash keys, and file basenames are not selector sources. If one file exports multiple utility functions, the file module remains the catalog artifact and the agent inspects source to choose the export.
+- Hash keys, `usage_key` values, row IDs, and other internal database identifiers must not be exposed as selectors.
+- Discovery agents may inspect methods and exported functions as evidence, but final catalog entries remain class or module level.
+- Method-level selectors such as `member:` and supporting tables such as `artifact_members` or `member_signatures` are outside the model and should be removed from the implementation.
+
+## ADR 0019: Remove Template Pattern Support
+
+Template patterns are removed from the Tool Catalog domain. Discovery workers do not create template entries, consulting does not return them, and the implementation should remove template-pattern tables, selectors, query/show/verify paths, and tests.
+
+Consequences:
+
+- Discovery stays focused on project-owned utility artifacts, external utility selectors, and external origin priority data.
+- Consult results stay faster and more predictable because they do not mix reusable utilities with recurring code examples.
+- Existing cached indexes that contain template-pattern data are not preserved as a compatibility target.
 
 ## ADR 0023: Use a Minimal Tool Catalog Schema
 
-The first project index schema contains only core catalog tables: metadata, projects, utility origins, origin priorities, artifacts, artifact members, template patterns, template instances, observed external usages, suppression trace rows, and full-text search entries.
+The first project index schema contains only core catalog tables: metadata, projects, utility origins with external Artifact Priority and usage-count metadata, artifacts with project-owned Artifact Priority metadata, external utility class or module selectors, suppression trace rows, discovery fingerprints for entries and suppressions, and capability tag associations. Utility origins identify external libraries or modules for priority and usage-count aggregation; external selectors identify the returned utility class or module. Suppressions are stored only at the same class, module, or normalized external origin layer. Internal keys may exist for persistence, but query and show expose only catalog selectors based on class or module full names.
 
 Consequences:
 
-- Ranking history, telemetry, recommendation scores, and complex audit tables are outside the first version.
-- The schema supports both utility artifacts and template code without becoming a general code intelligence database.
-- Suppression trace rows are stored only to avoid repeated prompts for explicitly rejected Findings.
+- Ranking history, telemetry, query-time recommendation scores, and complex audit tables are outside the first version.
+- The default schema supports utility artifacts, external utility selectors, and origin-level usage counts without becoming a general code intelligence database.
+- External origin `usage_count` is a discovery-produced count of distinct target project source files that use that normalized origin. Multiple imports or calls in the same file count once, and raw import or call evidence is not persisted.
+- External origin priority is deterministic: higher `usage_count` receives a lower numeric priority value, and equal counts are ordered by `origin_key` lexicographically. Manual external priority override metadata is outside the schema.
+- Suppression trace rows are stored only to avoid repeated prompts for explicitly rejected Findings at the utility artifact, external selector, or normalized external origin layer. They are discovery-only state and are not exposed by tag vocabulary, query, show, verify, or consulting ranking.
+- Suppressions and discovery fingerprints target only `artifact`, `external_selector`, or `origin`. They must not target methods, callable exports, repeated-code examples, raw external usage rows, source anchors, findings, imports, calls, or raw evidence rows.
+- External utility origins and external selectors are separate: one origin can rank multiple class or module selectors from the same library.
 
 ## ADR 0024: Use Built-In SQL Migrations
 
@@ -75,22 +83,22 @@ Consequences:
 
 ## ADR 0025: Store Summaries and Minimal Snippets
 
-The project index stores concise metadata, signatures, usage notes, minimal examples, and source anchors. It does not store full method bodies or large source copies.
+The project index stores concise metadata, stable class or module identifiers, usage notes, minimal examples, and project-owned utility source anchors. It does not store full method bodies, method signatures, external usage anchors, or large source copies.
 
 Consequences:
 
-- Agents use the catalog to locate reusable code, then read source anchors for full context.
-- Template entries may store short representative snippets, but long examples stay in the target project source.
+- Agents use the catalog to locate project-owned reusable code, then read source anchors for full context.
 
 ## ADR 0026: Store Relative Source Anchors
 
-The project index stores source anchors as paths relative to the target project root, plus symbol identity and line hints. Query and show output resolve those anchors against the current working tree.
+The project index stores source anchors only for project-owned utility artifacts, as paths relative to the target project root plus symbol identity and line hints. Query and show output resolve those anchors against the current working tree. External utility class or module selectors do not store source anchors. Stored source anchors use the minimal object shape `{ path, symbol, line }`; `path` is target-project relative, `symbol` is the utility class fully qualified name or relative module path corresponding to the catalog selector, and `line` is an optional hint.
 
 Consequences:
 
 - A shared project index works across multiple working trees with different filesystem locations.
 - Absolute paths may be used only as transient output or troubleshooting hints, not as canonical stored anchors.
 - Line numbers are hints; verification relocates symbols by identity when possible.
+- Source anchors do not store snippets, methods, callable exports, import text, call text, or call anchors.
 
 ## ADR 0027: Resolve Target Project Root Explicitly
 
@@ -103,7 +111,7 @@ Consequences:
 
 ## ADR 0028: Record Module Path Without Splitting Indexes
 
-Multi-module repositories use one project index, while catalog entries record module or subproject path metadata. This preserves cross-module reuse while letting queries filter or explain where a utility artifact or template pattern lives.
+Multi-module repositories use one project index, while catalog entries record module or subproject path metadata. This preserves cross-module reuse while letting queries filter or explain where a utility artifact lives.
 
 Consequences:
 
@@ -142,22 +150,22 @@ Consequences:
 
 ## ADR 0040: Store Capability Tags as Structured Catalog Data
 
-Capability tags are stored as structured catalog data instead of being embedded only in full-text search prose. Discovery agents assign canonical tags and concise descriptions to accepted utility artifacts, artifact members, and template patterns. The CLI persists those tags and supports exact tag filtering during query, while still using full-text search to rank entries within the tagged result set.
+Capability tags are stored as structured catalog data instead of being embedded only in prose. Discovery agents assign canonical tags and concise descriptions to accepted project-owned utility artifacts and external utility class or module selectors. The CLI persists those tags and supports exact tag filtering during query, while deterministic description text matching narrows entries within the tagged result set.
 
 Consequences:
 
 - Consulting can first retrieve a stable capability-specific collection, such as date or reflection utilities, then choose the best entry by description and verified source context.
-- The CLI exposes a read-only tag vocabulary view so consulting agents can inspect canonical tags, descriptions, optional aliases, and entry counts before querying.
-- Query results group matching utility members under their utility artifact, while ranking still uses the best matching member. This preserves class-level navigation without losing method-level precision.
-- Selection descriptions explain when to choose an entry, including fit and boundary, rather than only restating the entry's general function. Accepted entries store a required `summary` and optional `usage_notes` and `limitations`.
+- The CLI exposes a read-only tag vocabulary view derived from accepted entry tags. It returns canonical tags and project/external entry counts, but does not store tag descriptions, aliases, or a separate vocabulary table.
+- Query results return only utility artifacts or external utility class or module selectors, while ranking uses persisted Artifact Priority with lower numeric values first.
+- Selection descriptions explain when to choose an entry, including fit and boundary, rather than only restating the entry's general function. Accepted entries store a required English `summary` and optional English `usage_notes` and `limitations`; `summary` is the primary selection description used by description-text lookup.
 - Discovery agents own semantic tagging and synonym normalization; the CLI owns deterministic persistence, filtering, and verification.
-- Discovery agents add tags and selection descriptions only to final accepted entries. Suppressed or deferred non-entry evidence needs only decision reasons.
+- Capability tags are non-empty canonical string arrays. Tag values are lowercase tokens or lowercase kebab-case strings, and duplicate tags are removed before persistence.
+- Discovery agents add tags and selection descriptions only to final accepted utility artifacts and external utility class or module selectors. Suppressions need persisted decision reasons and fingerprints, but they do not carry capability tags, `summary`, `usage_notes`, `limitations`, or selection descriptions. Run-local deferrals stay in discovery artifacts and are not persisted.
 - Tag filters are exact filters. Consulting agents map user language and synonyms to canonical tags, and may run a broadened text query separately when the tag is uncertain.
 - Multiple tag filters use AND semantics. Consulting agents perform separate queries and merge results when they need OR-like behavior.
 - Entries may carry multiple tags, but tags represent core reuse dimensions rather than every implementation detail or keyword present in the source.
-- Discovery apply rejects accepted reusable utility and template entries that do not include at least one capability tag and a required summary.
-- Optional usage notes and limitations may be omitted.
+- Accepted entries store stable context metadata only when it helps deterministic filtering. `language` is required on project-owned utility artifacts and external utility class or module selectors. `artifact_type` is required only on project-owned utility artifacts. `framework` is optional on both entry kinds, and `module_path` is optional only on project-owned utility artifacts.
+- Discovery apply rejects accepted reusable utility artifacts and external utility class or module selectors that do not include at least one valid capability tag and a required summary.
+- Optional `usage_notes` and `limitations` may be omitted. When present, they are persisted and may participate in deterministic description-text lookup.
 - The schema and query command surface become larger than a prose-only catalog, but lookup quality no longer depends on whether a tag-like word happens to appear in a summary.
-- Capability tags apply at both artifact and member level; member-level tags support precise method selection, while artifact-level tags group related utilities.
-- Template patterns use the same tagging model so consulting can locate reusable template code by capability or scenario before inspecting representative instances.
-- Template tags describe implementation structure or reusable coding scenarios, not business domains.
+- Capability tags apply at project-owned utility artifact and external utility class or module selector level only.
