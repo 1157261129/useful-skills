@@ -31,7 +31,7 @@ const documentedCommands = [
   'tool-catalog verify <selector>',
 ];
 
-const forbiddenTerms = [
+const forbiddenSkillTerms = [
   'tool-catalog discover --full --dry-run',
   'tool-catalog discover --changed <paths...> --dry-run',
   'query --goal',
@@ -45,6 +45,11 @@ const forbiddenTerms = [
   'member_signatures',
   'template_patterns',
   'observed_external_usages',
+];
+
+const forbiddenGlobalTerms = [
+  'tool-catalog discover --full --dry-run',
+  'tool-catalog discover --changed <paths...> --dry-run',
 ];
 
 function run(command, args, options = {}) {
@@ -114,15 +119,21 @@ function checkToolCatalogDocs() {
   for (const command of documentedCommands) {
     assertIncludes(allDocs, command, 'Tool Catalog documentation');
   }
-  for (const forbidden of forbiddenTerms) {
+  for (const forbidden of forbiddenSkillTerms) {
     assertExcludes(readme, forbidden, 'README');
     assertExcludes(discover, forbidden, 'tool-catalog-discover');
     assertExcludes(consult, forbidden, 'tool-catalog-consult');
+  }
+  for (const forbidden of forbiddenGlobalTerms) {
+    assertExcludes(allDocs, forbidden, 'Tool Catalog documentation');
   }
 
   for (const expected of [
     'The Tool Catalog CLI performs deterministic Project Index database operations',
     'Discovery Decision File',
+    'The Tool Catalog CLI has no Harvest or dry-run scanning command',
+    'Use the `project_id`, `root_path`, and `catalog_path` returned by `tool-catalog config info --root <project> --json` as the discovery identity',
+    'do not call backup files such as `.bak-sync-*`',
     'external_selectors',
     'origins[].usage_count',
     'Do not write `source_anchor` on `external_selectors[]`',

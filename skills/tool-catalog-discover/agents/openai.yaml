@@ -1,4 +1,4 @@
 interface:
   display_name: "Tool Catalog Discover"
   short_description: "Discover reusable entries with worker-reviewed evidence"
-  default_prompt: "Use $tool-catalog-discover to run Evidence Harvest, validate the Finding Evidence Pack, search deferred tools for spawn_agent/wait_agent/send_input when subagent tools are not visible, and dispatch the worker DAG before any apply."
+  default_prompt: "Use $tool-catalog-discover to resolve project identity with the shared CLI, run agent-owned Evidence Harvest without CLI dry-run scans or backup scripts, search deferred tools for spawn_agent/wait_agent/send_input when subagent tools are not visible, and dispatch the worker DAG before any apply."

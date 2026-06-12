@@ -126,7 +126,7 @@ Consequences:
 
 - Discovery does not pollute target project repositories.
 - Agents can inspect recent run files when troubleshooting discovery results.
-- Dry-run command output can stay compact by reporting run file paths instead of printing full Findings data to stdout.
+- Discovery reports can stay compact by reporting run file paths instead of printing full source evidence data to stdout.
 
 ## ADR 0035: Use Single-Writer Project Locks
 

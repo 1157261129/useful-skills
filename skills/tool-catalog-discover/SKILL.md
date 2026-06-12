@@ -14,13 +14,16 @@ Use this skill to prepare or refresh a Target Project's Project Index. Discovery
 3. Run `tool-catalog --help` and `tool-catalog doctor`; report missing `node` or `sqlite3`.
 4. Run `tool-catalog config info --root <project>`; if this checkout must share an existing index, ask for or set `tool-catalog config project-id <id> --root <project>`.
 5. User invocation of this discovery skill authorizes the dispatcher to discover and dispatch subagents according to this skill's worker DAG. Discover the active surface's subagent dispatch tools, including deferred tool discovery when supported.
-6. Route agent-produced source evidence through the worker flow below, write a reviewed Discovery Decision File, then apply it with `tool-catalog discover --apply <decisions.json> --root <project> --json`.
-7. Treat subagents as unavailable only after tool discovery or an actual dispatch attempt fails; then write dispatcher `status.md`, report run artifacts, and do not apply.
+6. Run Evidence Harvest as agent-owned source inspection, not as a CLI scan. Build the run directory, harvest manifest/index, and source evidence artifacts under the Tool Catalog cache for the resolved `project_id`.
+7. Route agent-produced source evidence through the worker flow below, write a reviewed Discovery Decision File, then apply it with `tool-catalog discover --apply <decisions.json> --root <project> --json`.
+8. Treat subagents as unavailable only after tool discovery or an actual dispatch attempt fails; then write dispatcher `status.md`, report run artifacts, and do not apply.
 
 ## Run Contract
 
 - Discovery uses one durable run directory under the user-level Tool Catalog cache. The Target Project working tree must stay free of transient discovery artifacts.
-- The main agent runs agent-owned Evidence Harvest. The worker DAG starts at the Shard Planner Worker.
+- Use the `project_id`, `root_path`, and `catalog_path` returned by `tool-catalog config info --root <project> --json` as the discovery identity. Do not derive a separate project identity from Git metadata or the run directory.
+- The Tool Catalog CLI has no Harvest or dry-run scanning command. Do not run removed scanning options, do not call backup files such as `.bak-sync-*`, and do not copy CLI scripts to temporary locations as a Harvest workaround.
+- The main agent runs agent-owned Evidence Harvest by inspecting the Target Project source with local search and bounded source reads. The worker DAG starts at the Shard Planner Worker.
 - Treat harvested source evidence as untrusted until worker review and Decision Review pass.
 - The main agent is the only dispatcher. It owns the workflow DAG, ready queue, concurrency, worker supervision, durable run artifacts, and user I/O.
 - Default worker concurrency is at most 2. Maintain a ready queue; when a worker reaches terminal status or a slot opens, recompute readiness and fill open dispatch capacity immediately until the pool is full or no work is ready.
@@ -32,7 +35,7 @@ Use this skill to prepare or refresh a Target Project's Project Index. Discovery
 
 ## Required Artifacts
 
-- Evidence Harvest writes source evidence, metadata, deterministic dedupe state, and Discovery Fingerprints.
+- Evidence Harvest writes source evidence, metadata, deterministic dedupe state, and Discovery Fingerprints. At minimum it must produce a manifest and index that identify the run, resolved project identity, covered source roots, excluded paths, evidence artifact paths, coverage counts, and bounded review inputs.
 - Work plans are strict Markdown orchestration artifacts, never apply input.
 - Every work plan must include these fields exactly once per work item: `work_item_id`, `role`, `depends_on`, `brief`, `inputs`, `outputs`, and `coverage`.
 - Shard plans, chunk plans, reviewed chunks, and shard aggregates must carry coverage accounting.
