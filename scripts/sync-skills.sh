@@ -5,9 +5,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 SKILLS_DIR="${REPO_DIR}/skills"
-TOOLS_DIR="${REPO_DIR}/tools"
-TOOL_CATALOG_CLI_DIR="${TOOLS_DIR}/tool-catalog-cli"
-TOOL_CATALOG_CLI_NAME="tool-catalog-cli"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
 declare -a TARGET_ROOTS=(
@@ -18,8 +15,8 @@ declare -a TARGET_ROOTS=(
 usage() {
   cat <<'EOF'
 Usage:
-  sync-skills.sh          Sync all skills and shared tools to Codex and Claude CLI
-  sync-skills.sh --check  Verify installed copies match skills/* and tools/* contents
+  sync-skills.sh          Sync all skills to Codex and Claude CLI
+  sync-skills.sh --check  Verify installed copies match skills/* contents
 EOF
 }
 
@@ -28,7 +25,6 @@ read_skill_name() {
   local name
 
   name="$(awk -F': *' '$1 == "name" { print $2; exit }' "${source}")"
-  name="${name%$'\r'}"
   if [[ -z "${name}" ]]; then
     echo "Missing frontmatter name: ${source}" >&2
     exit 1
@@ -94,9 +90,6 @@ sync_target() {
   mkdir -p "${target_dir}"
   backup_target "${target}"
   cp "${source}" "${target}"
-  if [[ -x "${source}" ]]; then
-    chmod +x "${target}"
-  fi
   verify_target "${target}" "${source}"
 }
 
@@ -151,40 +144,6 @@ sync_or_check_source() {
   done
 }
 
-sync_or_check_directory() {
-  local source_dir="$1"
-  local target_dir="$2"
-  local mode="$3"
-  local source_file
-  local found=0
-
-  if [[ ! -d "${source_dir}" ]]; then
-    echo "Shared source directory not found: ${source_dir}" >&2
-    exit 1
-  fi
-
-  while IFS= read -r source_file; do
-    found=1
-    sync_or_check_file "${source_file}" "${source_dir}" "${target_dir}" "${mode}"
-  done < <(find "${source_dir}" -type f | sort)
-
-  if [[ "${found}" -eq 0 ]]; then
-    echo "No files found under shared source directory: ${source_dir}" >&2
-    exit 1
-  fi
-}
-
-sync_or_check_shared_cli() {
-  local mode="$1"
-  local target_root
-  local target_dir
-
-  for target_root in "${TARGET_ROOTS[@]}"; do
-    target_dir="${target_root}/${TOOL_CATALOG_CLI_NAME}"
-    sync_or_check_directory "${TOOL_CATALOG_CLI_DIR}" "${target_dir}" "${mode}"
-  done
-}
-
 main() {
   local mode="${1:-sync}"
   local source
@@ -200,7 +159,6 @@ main() {
         echo "No skills found under ${SKILLS_DIR}" >&2
         exit 1
       fi
-      sync_or_check_shared_cli "${mode}"
       ;;
     -h|--help)
       usage
