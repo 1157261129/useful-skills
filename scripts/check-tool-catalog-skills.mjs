@@ -131,6 +131,7 @@ function checkToolCatalogDocs() {
   for (const expected of [
     'The Tool Catalog CLI performs deterministic Project Index database operations',
     'Discovery Decision File',
+    'Coverage Inventory',
     'The Tool Catalog CLI has no Harvest or dry-run scanning command',
     'Use the `project_id`, `root_path`, and `catalog_path` returned by `tool-catalog config info --root <project> --json` as the discovery identity',
     'do not call backup files such as `.bak-sync-*`',
@@ -142,6 +143,20 @@ function checkToolCatalogDocs() {
     '`verify` accepts only project-owned `artifact:` selectors',
   ]) {
     assertIncludes(allDocs, expected, 'Tool Catalog documentation');
+  }
+
+  for (const expected of [
+    'Candidate files are a review subset, not a substitute for this inventory',
+    'missing or empty coverage counts are invalid',
+    'utility-heavy namespaces',
+    'project-owned imports from accepted artifacts',
+    'only manually curated candidates',
+    '`reflection`',
+    '`introspection`',
+    '`method-access`',
+    '`field-access`',
+  ]) {
+    assertIncludes(discover, expected, 'tool-catalog-discover coverage contract');
   }
 }
 

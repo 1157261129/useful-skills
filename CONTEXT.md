@@ -38,6 +38,10 @@ A worker-organized collection of findings that appear to describe the same reusa
 
 The discovery stage that collects findings from a target project without deciding whether they should become catalog entries.
 
+## Coverage Inventory
+
+A deterministic accounting of eligible source files under each covered source root. It distinguishes complete discovery coverage from a manually curated candidate subset.
+
 ## Tool Catalog CLI
 
 The shared command-line interface to the Project Index. It provides deterministic database operations for discovery and consulting workflows.
