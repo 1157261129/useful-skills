@@ -1,4 +1,4 @@
-# SOLID Principles Examples
+# Java SOLID Principles Examples
 
 ## SRP extraction
 

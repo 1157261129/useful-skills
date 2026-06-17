@@ -1,4 +1,4 @@
-# Security Audit Examples
+# Spring Security Audit Examples
 
 ## Parameterized query
 

@@ -1,4 +1,4 @@
-# Concurrency Review Examples
+# Java Concurrency Review Examples
 
 ## Spring `@Async` self-invocation
 

@@ -1,4 +1,4 @@
-# API Contract Review Examples
+# Spring Contract Review Examples
 
 ## HTTP status semantics
 

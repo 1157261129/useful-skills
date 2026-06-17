@@ -1,9 +1,9 @@
 ---
-name: api-contract-review
-description: Reviews Java or Spring REST API contracts for HTTP semantics, versioning, compatibility, DTO boundaries, status codes, and error formats. Use when reviewing Java/Spring API endpoints, controller changes, OpenAPI specs, release readiness, or backward compatibility risk.
+name: spring-contract-review
+description: Reviews Spring REST API contracts for HTTP semantics, versioning, compatibility, DTO boundaries, status codes, and error formats. Use when reviewing Spring controllers, Java/Spring API endpoints, OpenAPI specs, release readiness, or backward compatibility risk.
 ---
 
-# API Contract Review
+# Spring Contract Review
 
 Review Java/Spring API behavior as a public contract. Prioritize compatibility, predictable semantics, and client usability.
 

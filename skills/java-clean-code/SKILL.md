@@ -1,9 +1,9 @@
 ---
-name: clean-code
+name: java-clean-code
 description: Improves Java code readability and maintainability through naming, small functions, DRY, KISS, YAGNI, and focused refactoring. Use when cleaning Java code, refactoring Java classes, reviewing maintainability, reducing complexity, or improving Java names and method structure.
 ---
 
-# Clean Code
+# Java Clean Code
 
 Improve Java clarity with minimal behavior change. Preserve public APIs unless user asks otherwise.
 

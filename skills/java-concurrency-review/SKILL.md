@@ -1,9 +1,9 @@
 ---
-name: concurrency-review
+name: java-concurrency-review
 description: Reviews Java or Spring concurrency for thread safety, race conditions, deadlocks, async boundaries, executor use, virtual threads, and CompletableFuture behavior. Use when Java/Spring code uses threads, locks, shared mutable state, @Async, schedulers, CompletableFuture, parallel streams, or virtual threads.
 ---
 
-# Concurrency Review
+# Java Concurrency Review
 
 Treat Java/Spring concurrency bugs as correctness issues first. Prefer evidence, simple ownership, and bounded execution.
 

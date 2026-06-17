@@ -1,9 +1,9 @@
 ---
-name: test-quality
+name: java-test-quality
 description: Improves Java test quality with JUnit 5, AssertJ, Mockito, fixtures, parameterized tests, integration scope, coverage judgment, and maintainable assertions. Use when adding Java tests, reviewing Java test classes, improving Java coverage, or designing Java unit and integration tests.
 ---
 
-# Test Quality
+# Java Test Quality
 
 Make Java tests prove behavior, not mirror implementation. Prefer clear failure messages and stable fixtures.
 

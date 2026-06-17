@@ -1,4 +1,4 @@
-# Performance Smell Detection Examples
+# Java Performance Smell Detection Examples
 
 ## String building in loops
 

@@ -1,9 +1,9 @@
 ---
-name: security-audit
-description: Audits Java or Spring application security across validation, injection, authn/authz, secrets, deserialization, dependencies, headers, CSRF, XSS, and logging. Use when reviewing Java/Spring security-sensitive code, vulnerabilities, OWASP risks, release readiness, or authentication and authorization changes.
+name: spring-security-audit
+description: Audits Spring or Java application security across validation, injection, authn/authz, secrets, deserialization, dependencies, headers, CSRF, XSS, and logging. Use when reviewing Spring security-sensitive code, vulnerabilities, OWASP risks, release readiness, or authentication and authorization changes.
 ---
 
-# Security Audit
+# Spring Security Audit
 
 Review exploitable Java/Spring behavior and data exposure. Do not include secrets in prompts, logs, tests, or examples.
 

@@ -1,4 +1,4 @@
-# Logging Patterns Examples
+# Spring Logging Patterns Examples
 
 ## Parameterized logging
 

@@ -1,9 +1,9 @@
 ---
-name: solid-principles
+name: java-solid-principles
 description: Reviews and applies SOLID principles in Java class design, responsibilities, extension points, substitutability, interfaces, and dependency direction. Use when checking SOLID in Java code, refactoring large Java classes, reviewing object design, or evaluating SRP, OCP, LSP, ISP, or DIP concerns.
 ---
 
-# SOLID Principles
+# Java SOLID Principles
 
 Use SOLID on Java class design as a diagnostic tool, not a reason to add abstractions automatically.
 

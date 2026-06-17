@@ -1,9 +1,9 @@
 ---
-name: logging-patterns
-description: Guides Java or Spring bilingual Chinese-English logging with SLF4J, structured fields, log levels, MDC, request correlation, and safe exception logging. Use when adding Java/Spring logs, improving observability, debugging flow from logs, reviewing logging quality, or preventing secret leakage.
+name: spring-logging-patterns
+description: Guides Spring or Java bilingual Chinese-English logging with SLF4J, structured fields, log levels, MDC, request correlation, and safe exception logging. Use when adding Spring logs, improving observability, debugging flow from logs, reviewing logging quality, or preventing secret leakage.
 ---
 
-# Logging Patterns
+# Spring Logging Patterns
 
 Make Java/Spring logs explain production behavior in Chinese and English without exposing secrets or creating noise.
 

@@ -1,9 +1,9 @@
 ---
-name: design-patterns
+name: java-design-patterns
 description: Applies Java design patterns pragmatically, including Builder, Factory, Strategy, Observer, Template Method, Decorator, and Adapter. Use when designing Java components, removing Java conditionals, introducing object creation policies, or when user requests a Java-specific pattern.
 ---
 
-# Design Patterns
+# Java Design Patterns
 
 Use Java patterns to reduce real complexity, not to decorate simple code. Prefer existing project idioms.
 
