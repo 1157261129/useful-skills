@@ -64,7 +64,37 @@ backup_target() {
     # 保留回滚点，避免覆盖后无法恢复。
     cp "${target}" "${backup_path}"
     echo "Backed up ${target} -> ${backup_path}"
+    cleanup_backups "${target}"
   fi
+}
+
+cleanup_backups() {
+  local target="$1"
+  local target_dir
+  local target_name
+  local backup
+  local index
+  local keep_count=2
+  local delete_count
+  local -a backups=()
+
+  target_dir="$(dirname -- "${target}")"
+  target_name="$(basename -- "${target}")"
+
+  while IFS= read -r -d '' backup; do
+    backups+=("${backup}")
+  done < <(find "${target_dir}" -maxdepth 1 -type f -name "${target_name}.bak-sync-*" -print0 | sort -z)
+
+  if (( ${#backups[@]} <= keep_count )); then
+    return 0
+  fi
+
+  delete_count=$(( ${#backups[@]} - keep_count ))
+  for (( index = 0; index < delete_count; index++ )); do
+    # 仅删除同一目标文件的旧同步备份，保留最近两个回滚点。
+    rm -f -- "${backups[index]}"
+    echo "Removed old backup ${backups[index]}"
+  done
 }
 
 verify_target() {

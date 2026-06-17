@@ -1,6 +1,6 @@
 ---
 name: prepare-dispatch-constraints
-description: Prepares concise per-issue Dispatch Constraints for worker issue execution by reading only issue-relevant CONTEXT.md, ADRs, and current user instructions. Use before execute-issues dispatch when requested issues lack a Dispatch Constraints block.
+description: Prepares concise per-issue Dispatch Constraints for worker issue execution by reading only issue-relevant CONTEXT.md, ADRs, and current user instructions. Use when `execute-issues` is dispatching requested issues that lack a reusable Dispatch Constraints block or need an explicitly allowed refresh.
 ---
 
 # Prepare Dispatch Constraints
