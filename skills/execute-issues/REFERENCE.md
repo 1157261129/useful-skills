@@ -6,8 +6,8 @@ Ask one combined question before spawning any worker:
 
 Use the default worker dispatch profile?
 
-- Model: choose by the current agent surface. Use `gpt-5.4` for Codex workers.
-  Use `Sonnet 4.6` for Claude workers, translated to the valid model identifier accepted by the active subagent tool.
+- Model: use the active subagent tool default unless the user overrides it. If an
+  explicit model ID is required, use one accepted by that tool and record it in the execution-start entry.
 - Reasoning: the main agent selects each worker's reasoning effort from task difficulty,
   ambiguity, risk, dependency depth, and verification burden. Do not classify a task as simple lightly.
 - TDD: worker decides based on task complexity, risk, and implementation scope; frontend page work does not use TDD.
@@ -35,8 +35,7 @@ For a chain like `01 -> 02 -> 03/04`, run `01`, then `02`, then `03` and `04` to
 - Do not produce a final handoff while any dispatched worker remains active.
 - Keep implementation, repair, debugging, verification, and detailed review inside workers by default.
 - Read local code in the main agent only to unblock orchestration or resolve contradictory worker reports.
-- Use a durable shared channel for worker status: issue `## Comments` by default,
-  or an explicitly provided shared status file/memory key.
+- Use issue `## Comments` as the durable shared channel for worker status.
 
 ## Dispatch Constraints
 
@@ -59,13 +58,15 @@ For each runnable implementation issue:
 - Tell the worker to continue until completed, failed, or genuinely blocked.
 - Require terminal report: `completed`, `failed`, or `blocked`, changed files,
   commands run, remaining risks, and whether review is needed.
+- Tell the worker heartbeat/status-check interrupts normal work: on receipt,
+  append heartbeat to issue `## Comments` before continuing any other task.
 
 ## Dispatch Format
 
 - First dispatch in a scheduling cycle must use a valid tool payload.
 - Fill multiple open concurrency slots with one `multi_tool_use.parallel` call.
 - Never exceed selected concurrency; count implementation, review, and repair subagents in the same pool.
-- Pass selected worker `model` and `reasoning_effort` in every payload.
+- Pass selected worker `model` and `reasoning_effort` when the subagent tool schema supports them.
 - If `fork_context: true` is used, omit `agent_type`; put worker ownership in the prompt.
 - Use `message` or `items`, not both. If TDD is forced, use `items` and attach
   the `tdd` skill plus one plain-text brief.
@@ -84,25 +85,38 @@ For each runnable implementation issue:
 ## Status Checks
 
 - Use status checks for liveness, not premature terminal-state collection.
-- If slow but active, continue waiting; optionally ask for concise shared-channel update.
-- If shared channel is unchanged, try again later.
+- Heartbeat is issue-file based. When the main agent requests heartbeat, it must re-read
+  the issue file before interpreting worker state or deciding the next action.
+- A worker that receives heartbeat must immediately append a concise heartbeat entry to
+  the issue `## Comments`, including current state, current step, blockers if any,
+  and whether it is still working.
+- If slow but active, continue waiting; request heartbeat only when orchestration needs liveness.
+- If the issue file has a fresh heartbeat, treat the worker as active unless it also
+  reports `completed`, `failed`, or `blocked`.
+- If the issue file is unchanged after heartbeat, do not mark failed and do not increment
+  the 5-attempt abnormal-stop counter. Wake the worker, dispatch an explicit heartbeat
+  task, then re-read the issue file.
 - If worker state is unknown, treat it as active unless clear crash or unreachable evidence exists.
 
 ## Abnormal Worker Stops
 
 When a worker crashes, becomes unreachable, or has no usable runtime state:
 
-1. Try to wake that worker up to 5 times through available worker/status channel.
-2. Record each wake attempt in the shared channel when possible.
-3. If it resumes, continue normal supervision.
-4. If all 5 attempts fail, trip global stop: do not wake any subagent again,
+1. Re-read the issue file before counting or recording any abnormal-stop attempt.
+2. Wake that worker and dispatch an explicit heartbeat task through the available worker/status channel.
+3. Record each wake attempt in issue `## Comments`; if write-back fails, keep the failure reason for final handoff.
+4. Re-read the issue file after each wake-plus-heartbeat attempt.
+5. Count a failed wake attempt only when clear crash or unreachable evidence remains and
+   no fresh heartbeat was written. Missing heartbeat alone is not a counted failure.
+6. If it resumes or writes heartbeat, continue normal supervision.
+7. If 5 counted wake attempts fail, trip global stop: do not wake any subagent again,
    do not dispatch new implementation/review/repair workers, and do not take over issue work in the main agent.
-5. Wait only for already-running workers to complete or abnormally terminate, then end with unresolved issues recorded.
+8. Wait only for already-running workers to complete or abnormally terminate, then end with unresolved issues recorded.
 
 ## Terminal Window
 
 Once a worker is on track, give it a 30-minute terminal window before expecting terminal report.
-If tooling requires shorter waits, treat each timeout as heartbeat.
+If tooling requires shorter waits, handle each timeout through Status Checks; do not count it as failure.
 Extend by another 30 minutes while progress is presumed and no terminal condition is confirmed.
 
 ## Issue Write-Back
@@ -118,7 +132,7 @@ After workers finish:
 
 - Append result entry with success/failure, reason, changed files, verification summary,
   and review/repair recommendation.
-- Base results on durable shared-channel reports, not worker-private chat-only statements.
+- Base results on issue `## Comments` reports, not worker-private chat-only statements.
 
 ## Review And Repair
 

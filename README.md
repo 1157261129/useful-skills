@@ -23,5 +23,3 @@ The Java review and pattern skills are adapted from
 scripts/sync-skills.sh
 scripts/sync-skills.sh --check
 ```
-
-The legacy `scripts/sync-execute-issues.sh` entrypoint delegates to `scripts/sync-skills.sh`.
