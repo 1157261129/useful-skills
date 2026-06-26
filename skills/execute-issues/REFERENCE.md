@@ -2,7 +2,10 @@
 
 ## Before Dispatch
 
-Ask one combined question before spawning any worker:
+Ask one combined blocking confirmation before any execution-start write-back or worker spawn.
+Do not proceed on silence, assumed agreement, or a non-blocking notice.
+The profile is selected only after the user explicitly confirms the default profile
+or provides overrides.
 
 Use the default worker dispatch profile?
 
@@ -12,9 +15,14 @@ Use the default worker dispatch profile?
   ambiguity, risk, dependency depth, and verification burden. Do not classify a task as simple lightly.
 - TDD: worker decides based on task complexity, risk, and implementation scope; frontend page work does not use TDD.
 - Concurrency: at most 2 worker subagents at once.
+- Worker wait window: 30 minutes before routine heartbeat/status confirmation for a worker.
+- Heartbeat write wait: 5 minutes after each heartbeat or wake-and-heartbeat request before re-reading the issue file.
 
 If the user declines or provides overrides, collect model, reasoning policy or per-worker
-reasoning overrides, TDD policy, and max concurrency together. Do not silently change the selected profile later.
+reasoning overrides, TDD policy, max concurrency, worker wait window, and heartbeat write wait together. Do not silently change the selected profile later.
+
+Do not phrase this as a non-blocking notice such as "change it if needed; otherwise I will run with the default."
+Ask the profile question, then stop orchestration until the user answers.
 
 ## Execution Graph
 
@@ -58,8 +66,8 @@ For each runnable implementation issue:
 - Tell the worker to continue until completed, failed, or genuinely blocked.
 - Require terminal report: `completed`, `failed`, or `blocked`, changed files,
   commands run, remaining risks, and whether review is needed.
-- Tell the worker heartbeat/status-check interrupts normal work: on receipt,
-  append heartbeat to issue `## Comments` before continuing any other task.
+- Tell the worker that heartbeat/status-check requests interrupt normal work: on receipt,
+  append a heartbeat entry to issue `## Comments` before continuing any other task.
 
 ## Dispatch Format
 
@@ -84,18 +92,21 @@ For each runnable implementation issue:
 
 ## Status Checks
 
-- Use status checks for liveness, not premature terminal-state collection.
-- Heartbeat is issue-file based. When the main agent requests heartbeat, it must re-read
-  the issue file before interpreting worker state or deciding the next action.
+- Use status checks for liveness after the selected worker wait window elapses, not premature terminal-state collection.
+- Track the worker wait window per active worker from dispatch time, the latest fresh heartbeat, or the latest confirmed progress, whichever is later.
+- Do not request routine heartbeat for a worker until that worker reaches the selected worker wait window.
+- Heartbeat is issue-file based. When the main agent requests heartbeat, it must wait
+  for the selected heartbeat write wait, allowing the worker to append heartbeat, then re-read the issue file
+  before interpreting worker state or deciding the next action.
 - A worker that receives heartbeat must immediately append a concise heartbeat entry to
   the issue `## Comments`, including current state, current step, blockers if any,
   and whether it is still working.
-- If slow but active, continue waiting; request heartbeat only when orchestration needs liveness.
+- If slow but active and still inside the selected worker wait window, continue waiting.
 - If the issue file has a fresh heartbeat, treat the worker as active unless it also
   reports `completed`, `failed`, or `blocked`.
 - If the issue file is unchanged after heartbeat, do not mark failed and do not increment
   the 5-attempt abnormal-stop counter. Wake the worker, dispatch an explicit heartbeat
-  task, then re-read the issue file.
+  task, wait for the selected heartbeat write wait, then re-read the issue file.
 - If worker state is unknown, treat it as active unless clear crash or unreachable evidence exists.
 
 ## Abnormal Worker Stops
@@ -105,7 +116,7 @@ When a worker crashes, becomes unreachable, or has no usable runtime state:
 1. Re-read the issue file before counting or recording any abnormal-stop attempt.
 2. Wake that worker and dispatch an explicit heartbeat task through the available worker/status channel.
 3. Record each wake attempt in issue `## Comments`; if write-back fails, keep the failure reason for final handoff.
-4. Re-read the issue file after each wake-plus-heartbeat attempt.
+4. Wait for the selected heartbeat write wait after each wake-and-heartbeat attempt, then re-read the issue file.
 5. Count a failed wake attempt only when clear crash or unreachable evidence remains and
    no fresh heartbeat was written. Missing heartbeat alone is not a counted failure.
 6. If it resumes or writes heartbeat, continue normal supervision.
@@ -113,19 +124,23 @@ When a worker crashes, becomes unreachable, or has no usable runtime state:
    do not dispatch new implementation/review/repair workers, and do not take over issue work in the main agent.
 8. Wait only for already-running workers to complete or abnormally terminate, then end with unresolved issues recorded.
 
-## Terminal Window
+## Worker Wait Window
 
-Once a worker is on track, give it a 30-minute terminal window before expecting terminal report.
-If tooling requires shorter waits, handle each timeout through Status Checks; do not count it as failure.
-Extend by another 30 minutes while progress is presumed and no terminal condition is confirmed.
+The worker wait window is a dispatch-profile parameter. Default: 30 minutes.
+Once a worker is on track, give it the selected worker wait window before expecting terminal report
+or routine heartbeat confirmation.
+If tooling produces a non-terminal timeout before the selected worker wait window elapses,
+continue waiting; do not count it as failure.
+After a fresh heartbeat or confirmed progress, restart the selected worker wait window.
 
 ## Issue Write-Back
 
 Before spawning workers:
 
+- Confirm the dispatch profile with the user and record the selected profile.
 - Ensure every requested issue has `## Comments`.
 - Append execution entry to every requested issue with date, selected model, TDD policy,
-  concurrency, dependency context, and constraint source.
+  concurrency, worker wait window, heartbeat write wait, dependency context, and constraint source.
 - Finish write-back for full requested issue set before first dispatch.
 
 After workers finish:
@@ -165,9 +180,10 @@ After workers finish:
 
 Before first dispatch:
 
-1. Ensure every requested issue has reusable constraints.
-2. Complete full issue-set write-back.
-3. Do not dispatch workers until write-back completes.
+1. Confirm the dispatch profile with the user.
+2. Ensure every requested issue has reusable constraints.
+3. Complete full issue-set write-back.
+4. Do not dispatch workers until write-back completes.
 
 After initial pass:
 
@@ -181,7 +197,7 @@ After initial pass:
 ## Progress Updates
 
 Report active dependency layer or ready queue, active implementation/review/repair workers,
-completed/failed/blocked issues, and whether the main agent is waiting inside a terminal window.
+completed/failed/blocked issues, and whether the main agent is waiting inside a worker wait window.
 
 ## Final Handoff
 

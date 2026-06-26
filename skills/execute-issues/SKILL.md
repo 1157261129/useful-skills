@@ -15,14 +15,14 @@ Use this skill to implement existing issues. Do not use it to break plans into i
 ## Workflow
 
 1. Read each requested issue and its `Blocked by` section.
-2. Ask one combined dispatch-profile question: model, reasoning policy, TDD policy, and max concurrency.
+2. Ask one blocking dispatch-profile confirmation: model, reasoning policy, TDD policy, max concurrency, worker wait window, and heartbeat write wait. Wait for an explicit user answer before any execution-start write-back or worker dispatch.
 3. Build a dependency DAG; reject cycles or ambiguous blockers with exact issue references.
 4. Ensure each requested issue has a `## Comments` shared channel and reusable `Dispatch Constraints`.
 5. Run `prepare-dispatch-constraints` only for requested issues missing `Dispatch Constraints`.
 6. Write one execution-start entry to every requested issue before dispatch.
 7. Dispatch ready implementation workers continuously, capped by selected concurrency.
-8. Supervise through issue-file heartbeat: request heartbeat, re-read the issue file, then interpret worker state.
-9. Missing heartbeat is not a failure count; wake the worker and dispatch a heartbeat task before abnormal-stop handling.
+8. Supervise through issue-file heartbeat: wait until an active worker reaches the selected worker wait window, request heartbeat from that worker, wait for the worker to write it, then re-read the issue file.
+9. If heartbeat is still missing after the heartbeat write wait, do not count it as failure; wake the worker and dispatch a heartbeat task before abnormal-stop handling.
 10. After terminal implementation, dispatch review and repair workers when required.
 11. Write back every implementation, review, repair, skipped, blocked, failed, or completed result.
 12. Finish only when no runnable worker remains active and all downstream blockers are recorded.
@@ -40,9 +40,12 @@ Use this skill to implement existing issues. Do not use it to break plans into i
 ## Defaults
 
 - Max concurrency: 2 worker subagents.
+- Worker wait window: 30 minutes before routine heartbeat/status confirmation for a worker.
 - TDD: worker decides by complexity, risk, and scope; frontend page work skips TDD.
 - Default model: choose by active agent surface as specified in [REFERENCE.md](REFERENCE.md).
 - Reasoning: main agent chooses per worker from difficulty, ambiguity, risk, dependency depth, and verification burden.
+- Heartbeat write wait: 5 minutes after each heartbeat or wake-and-heartbeat request before re-reading the issue file.
+- Defaults are only the proposed profile. User silence, no visible objection, or "if unchanged I will proceed" does not confirm the profile.
 
 ## Detailed Protocol
 
