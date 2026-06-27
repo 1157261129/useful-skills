@@ -15,7 +15,8 @@ Use the default worker dispatch profile?
   ambiguity, risk, dependency depth, and verification burden. Do not classify a task as simple lightly.
 - TDD: worker decides based on task complexity, risk, and implementation scope; frontend page work does not use TDD.
 - Concurrency: at most 2 worker subagents at once.
-- Worker wait window: 30 minutes before routine heartbeat/status confirmation for a worker.
+- Worker wait window: 30 minutes during which the main agent performs no routine
+  worker status checks, issue-file reads, or heartbeat requests.
 - Heartbeat write wait: 5 minutes after each heartbeat or wake-and-heartbeat request before re-reading the issue file.
 
 If the user declines or provides overrides, collect model, reasoning policy or per-worker
@@ -44,6 +45,8 @@ For a chain like `01 -> 02 -> 03/04`, run `01`, then `02`, then `03` and `04` to
 - Keep implementation, repair, debugging, verification, and detailed review inside workers by default.
 - Read local code in the main agent only to unblock orchestration or resolve contradictory worker reports.
 - Use issue `## Comments` as the durable shared channel for worker status.
+- Treat each active worker's wait window as idle time: no issue-file polling,
+  runtime queries, or repeated "still waiting" updates.
 
 ## Dispatch Constraints
 
@@ -92,12 +95,16 @@ For each runnable implementation issue:
 
 ## Status Checks
 
-- Use status checks for liveness after the selected worker wait window elapses, not premature terminal-state collection.
-- Track the worker wait window per active worker from dispatch time, the latest fresh heartbeat, or the latest confirmed progress, whichever is later.
-- Do not request routine heartbeat for a worker until that worker reaches the selected worker wait window.
+- Use status checks for liveness after the selected worker wait window expires, not premature terminal-state collection.
+- Track the worker wait window per active worker from dispatch time, the latest
+  fresh heartbeat, or the latest confirmed progress, whichever is later.
+- Do not request routine heartbeat, read the issue file, or query runtime state
+  for a worker until that worker's selected worker wait window expires.
+- Inside the window, remain idle unless the user explicitly asks, a dispatched
+  worker returns, or the window expires.
 - Heartbeat is issue-file based. When the main agent requests heartbeat, it must wait
-  for the selected heartbeat write wait, allowing the worker to append heartbeat, then re-read the issue file
-  before interpreting worker state or deciding the next action.
+  for the selected heartbeat write wait, allowing the worker to append heartbeat,
+  then re-read the issue file before interpreting worker state or deciding the next action.
 - A worker that receives heartbeat must immediately append a concise heartbeat entry to
   the issue `## Comments`, including current state, current step, blockers if any,
   and whether it is still working.
@@ -127,11 +134,11 @@ When a worker crashes, becomes unreachable, or has no usable runtime state:
 ## Worker Wait Window
 
 The worker wait window is a dispatch-profile parameter. Default: 30 minutes.
-Once a worker is on track, give it the selected worker wait window before expecting terminal report
-or routine heartbeat confirmation.
-If tooling produces a non-terminal timeout before the selected worker wait window elapses,
+It starts at dispatch and restarts after each fresh heartbeat or confirmed progress.
+Until it expires, do not expect a terminal report, routine heartbeat, issue-file read,
+runtime state query, or main-agent scheduling check for that worker.
+If tooling produces a non-terminal timeout before the selected worker wait window expires,
 continue waiting; do not count it as failure.
-After a fresh heartbeat or confirmed progress, restart the selected worker wait window.
 
 ## Issue Write-Back
 
@@ -198,6 +205,8 @@ After initial pass:
 
 Report active dependency layer or ready queue, active implementation/review/repair workers,
 completed/failed/blocked issues, and whether the main agent is waiting inside a worker wait window.
+During a wait window, report only at dispatch time, explicit user request,
+dispatched-worker return, window expiry, heartbeat/write-wait expiry, or final handoff.
 
 ## Final Handoff
 
