@@ -21,7 +21,7 @@ Use this skill to implement existing issues with Paseo. Do not use it to split p
 4. Ensure each requested issue has reusable `Dispatch Constraints`; run `prepare-dispatch-constraints` only when constraints are missing, marked stale/superseded/invalid, or the user explicitly requests refresh.
 5. Choose providers from the confirmed profile, using Paseo preferences only as defaults: `impl` for implementation/repair, `audit` for review, `ui` for visual work.
 6. Append one execution-start note to each requested issue with date, dependency context, provider/model/settings choices, reasoning policy, TDD policy, concurrency, workspace strategy, and constraint source.
-7. Dispatch ready implementation agents with `create_agent`, `relationship: { kind: "subagent" }`, `notifyOnFinish` omitted or `true`, and a self-contained prompt.
+7. Dispatch ready implementation agents with `create_agent`, `relationship: { kind: "subagent" }`, `settings` populated from the confirmed profile, `notifyOnFinish` omitted or `true`, and a self-contained prompt.
 8. Wait for Paseo finish/error/permission notifications. Do not use `wait_for_agent` with notify-on-finish agents, poll active agents, require file heartbeats, or mark slow work failed.
 9. On implementation completion, write back result. Enqueue review only when the issue, user, or terminal report requires it. Enqueue repair only for fixable review findings.
 10. Recompute readiness after each terminal result. Dispatch downstream work only after upstream implementation and required review/repair succeed.
@@ -33,13 +33,23 @@ Ask this before execution-start write-back or agent creation. Do not proceed on 
 
 Default profile:
 
-- Provider/model/settings: Paseo preferences decide role providers (`impl`, `audit`, `ui`) unless the user overrides; pass model/mode/feature choices through `settings` when needed.
-- Reasoning: main agent chooses per Paseo agent from task difficulty, ambiguity, risk, dependency depth, and verification burden.
+- Provider/model/settings: Paseo preferences decide role providers (`impl`, `audit`, `ui`) unless the user overrides; pass runtime choices (`modeId`, `thinkingOptionId`, `features`) through `settings`.
+- Reasoning: main agent chooses per Paseo agent from task difficulty, ambiguity, risk, dependency depth, and verification burden, then maps that choice to `settings.thinkingOptionId`.
 - TDD: implementation/repair agent decides by complexity, risk, and scope; frontend page work skips TDD.
 - Max concurrency: 2 active Paseo agents, counting implementation, review, and repair.
 - Workspace strategy: current workspace by default; when substantial edit overlap is detected, ask whether to lower concurrency or switch to per-issue worktrees, then wait for the user's answer before dispatch.
 
 If the user declines or provides overrides, collect provider/model/settings choices, reasoning policy or per-agent overrides, TDD policy, max concurrency, and workspace strategy together. Do not silently change the selected profile later.
+
+## Runtime Settings
+
+`create_agent` runtime options are controlled by `settings`, not labels or prompt text.
+
+- Pass the confirmed mode as `settings.modeId`; for full access, use `modeId: "full-access"`.
+- Pass the chosen reasoning intensity as `settings.thinkingOptionId`.
+- For Codex, set `settings.thinkingOptionId` to `"xhigh"` for implementation/repair and `"high"` for review when the dispatch profile calls for those intensities.
+- If exact thinking option IDs are unknown, call `inspect_provider` first; use `list_models` only if needed. Do not infer IDs from display labels.
+- Example implementation settings: `settings: { modeId: "full-access", thinkingOptionId: "xhigh" }`.
 
 ## Dispatch Prompt
 
