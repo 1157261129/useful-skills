@@ -23,7 +23,7 @@ Use this skill to implement existing issues with Paseo. Do not use it to split p
 6. Append one execution-start note to each requested issue with date, dependency context, provider/model/settings choices, reasoning policy, TDD policy, concurrency, workspace strategy, and constraint source.
 7. Dispatch ready implementation agents with `create_agent`, `relationship: { kind: "subagent" }`, `settings` populated from the confirmed profile, `notifyOnFinish` omitted or `true`, and a self-contained prompt.
 8. Wait for Paseo finish/error/permission notifications. Do not use `wait_for_agent` with notify-on-finish agents, poll active agents, require file heartbeats, or mark slow work failed.
-9. On implementation completion, write back result. Enqueue review only when the issue, user, or terminal report requires it. Enqueue repair only for fixable review findings.
+9. On implementation completion, write back result. Enqueue review only when the issue, user, `Dispatch Constraints`, or implementation terminal report requires it. Enqueue repair only for fixable blocking review findings.
 10. Recompute readiness after each terminal result. Dispatch downstream work only after upstream implementation and required review/repair succeed.
 11. Finish only when every dispatched Paseo agent has produced a terminal report and all requested, skipped, failed, or blocked outcomes are written back.
 
@@ -71,6 +71,16 @@ Each agent starts with zero context. Include:
 - Failed, blocked, or unfixable upstream work blocks downstream dependents; record blocker chains.
 - If ready issues have substantial overlapping edit areas, do not reduce concurrency yourself. Ask the user whether to lower concurrency or switch to per-issue worktrees, then wait for the user's answer before dispatching conflicting parallel work.
 - Use schedules only when the user asks for delayed/recurring execution or the current agent cannot stay alive; do not add schedule heartbeats by default.
+
+## Review And Repair
+
+- Enqueue review only when the issue, user, `Dispatch Constraints`, or implementation terminal report requires it.
+- Dispatch review with `audit` provider and review-only scope; reviewers must not modify workspace files.
+- Treat findings as blocking only with exact evidence: file/line, failing command, security risk, regression, or unmet acceptance criterion.
+- Enqueue repair only for fixable blocking findings; repair scope is limited to the reviewed issue and cited findings.
+- After successful repair for a required review, enqueue one follow-up review to decide pass/fail.
+- Continue review/repair cycles only while each cycle reports concrete progress. Stop on pass, explicit failure, genuine blockage, unfixable blocking findings, repeated blocking findings without progress, or user stop.
+- If required review/repair fails, blocks, or leaves unfixable blocking findings, mark the issue failed or blocked and do not dispatch downstream dependents.
 
 ## Removed Workarounds
 
