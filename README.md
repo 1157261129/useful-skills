@@ -2,24 +2,72 @@
 
 This repository stores agent skills in the standard directory layout:
 
-```text
+```
 skills/
   <skill-name>/
     SKILL.md
 ```
 
-Each skill directory name must match the `name` field in its `SKILL.md` frontmatter.
-Optional skill resources such as `agents/`, `scripts/`, `references/`, and `assets/` stay inside the skill directory.
+Each skill directory name must match the `name` field in its `SKILL.md` frontmatter. Optional skill resources such as `agents/`, `scripts/`, `references/`, and `assets/` stay inside the skill directory.
+
+## Available Skills
+
+### Java Skills
+
+| Skill | Description |
+|-------|-------------|
+| `java-clean-code` | Improves Java code readability and maintainability through naming, small functions, DRY, KISS, YAGNI, and focused refactoring |
+| `java-code-review` | Performs systematic Java code review for correctness, null safety, exceptions, collections, resources, APIs, concurrency, performance, and tests |
+| `java-concurrency-review` | Reviews Java or Spring concurrency for thread safety, race conditions, deadlocks, async boundaries, executor use, virtual threads, and CompletableFuture behavior |
+| `java-design-patterns` | Applies Java design patterns pragmatically, including Builder, Factory, Strategy, Observer, Template Method, Decorator, and Adapter |
+| `java-performance-smell-detection` | Detects Java code-level performance smells in strings, streams, boxing, regex, collections, allocation, caching, and hot-path control flow |
+| `java-solid-principles` | Reviews and applies SOLID principles in Java class design, responsibilities, extension points, substitutability, interfaces, and dependency direction |
+| `java-test-quality` | Improves Java test quality with JUnit 5, AssertJ, Mockito, fixtures, parameterized tests, integration scope, coverage judgment, and maintainable assertions |
+| `maven-dependency-audit` | Audits Java Maven dependencies for outdated versions, vulnerabilities, unused dependencies, transitive conflicts, plugin drift, and release risk |
+
+### Spring Framework Skills
+
+| Skill | Description |
+|-------|-------------|
+| `spring-architecture-review` | Reviews Spring or Java application architecture for package structure, module boundaries, dependency direction, layering, and framework coupling |
+| `spring-boot-patterns` | Guides Java Spring Boot controllers, services, repositories, DTOs, validation, exception handling, configuration, transactions, and tests |
+| `spring-contract-review` | Reviews Spring REST API contracts for HTTP semantics, versioning, compatibility, DTO boundaries, status codes, and error formats |
+| `spring-logging-patterns` | Guides Spring or Java bilingual Chinese-English logging with SLF4J, structured fields, log levels, MDC, request correlation, and safe exception logging |
+| `spring-security-audit` | Audits Spring or Java application security across validation, injection, authn/authz, secrets, deserialization, dependencies, headers, CSRF, XSS, and logging |
+
+### General Skills
+
+| Skill | Description |
+|-------|-------------|
+| `conventional-commit` | Drafts and validates Git commit messages that follow the Conventional Commits specification and use Chinese as the primary commit language |
+| `execute-issues` | Executes existing implementation issues through supervised workers, dependency scheduling, write-back, review, and repair |
+| `paseo-execute-issues` | Executes existing implementation issues through Paseo-managed agents, dependency scheduling, review, repair, and issue write-back |
+| `prepare-dispatch-constraints` | Prepares concise per-issue Dispatch Constraints for worker issue execution |
+| `write-a-prompt` | Generates focused prompts for vibe-coding and coding-agent sessions from a concrete software task |
+
+## Usage
+
+To use a skill, reference it in your agent configuration or workflow. Each skill contains:
+
+- **SKILL.md** - The main skill definition with description, workflow, and usage guidelines
+- **EXAMPLES.md** - Practical examples demonstrating the skill in action
+- **REFERENCE.md** - Additional reference documentation (if applicable)
+- **agents/** - Agent configurations (optional)
+- **scripts/** - Supporting scripts (optional)
+- **assets/** - Supporting assets (optional)
 
 ## Imported Skills
 
-The Java review and pattern skills are adapted from
-[`decebals/claude-code-java`](https://github.com/decebals/claude-code-java),
-`.claude/skills`, under the MIT License, Copyright (c) 2026 Decebal Suiu.
+The Java review and pattern skills are adapted from [`decebals/claude-code-java`](https://github.com/decebals/claude-code-java), `.claude/skills`, under the MIT License, Copyright (c) 2026 Decebal Suiu.
 
 ## Sync
 
+Keep skills synchronized with the source repository:
+
 ```bash
+# Sync all skills
 scripts/sync-skills.sh
+
+# Check for differences without syncing
 scripts/sync-skills.sh --check
 ```
