@@ -11,7 +11,7 @@ description: >
 model: "deepseek-v4-flash"
 provider: "codex"
 settings:
-  modeId: "default"
+  modeId: "full-access"
 developer_instructions: |
   Use `/caveman full`.
 

@@ -12,7 +12,7 @@ Delegate read-only investigation. Keep decisions, implementation, and the final 
 1. Read the companion `paseo` skill and [agent-templates.md](references/agent-templates.md).
 2. Match the task against every template `description` and select the closest fit.
 3. Read `~/.paseo/orchestration-preferences.json`. If it is missing, tell the user once and continue; missing preferences never make a fixed template model unavailable. Apply relevant freeform preferences to the prompt, but do not replace the template's explicit `provider`, `model`, or `settings`.
-4. Confirm the template's Paseo `provider` is available. Treat Paseo providers and their internal model IDs as separate layers: a model missing from `list_models` is not evidence that the model is unavailable.
+4. Confirm the template's Paseo `provider` is available and its `modeId` appears in that provider's current modes. Treat Paseo providers, modes, and their internal model IDs as separate layers: a model missing from `list_models` is not evidence that the model is unavailable.
 5. Confirm the task is bounded, read-only, dependency-ready, and non-duplicate.
 
 Keep implementation, edits, decisions, and external side effects in the primary agent.
@@ -40,7 +40,7 @@ Dispatch through Paseo with at most three agents active. Continue independent pr
 
 Create the agent with the selected template's explicit `provider`, `model`, and `settings`. For `fast-investigator`, pass `provider: "codex"` and `model: "deepseek-v4-flash"` even when DeepSeek is absent from Paseo's Codex model catalog; Codex may resolve custom model IDs from its own configuration.
 
-If the Codex provider itself is unavailable, stop and report the provider failure. If DeepSeek agent creation or its initial run actually fails, preserve the original error, archive the failed agent, and retry once using the complete `deep-investigator` provider, model, and settings with the same investigation prompt. Report both the DeepSeek failure and the Luna fallback. Do not retry or fall back merely because model discovery omitted DeepSeek, and do not perform a second fallback.
+If the Codex provider itself is unavailable, stop and report the provider failure because both templates require it. If the fast template's model, mode, or settings fail validation, or DeepSeek agent creation or its initial run fails, preserve and classify the original error, then retry once using the complete `deep-investigator` provider, model, and settings with the same investigation prompt. Archive the failed agent only when creation returned an agent. Report both the original failure and the Luna fallback. Do not retry or fall back merely because model discovery omitted DeepSeek, and do not perform a second fallback.
 
 When the next primary step depends on an active agent, stop and wait for its terminal notification. Let the notification resume the primary agent; use neither polling nor heartbeats.
 
