@@ -1,0 +1,7 @@
+interface:
+  display_name: "Paseo Dispatch"
+  short_description: "Dispatch parallel investigators through Paseo"
+  default_prompt: "Use $paseo-dispatch to delegate suitable investigation tasks through configurable Paseo agent templates."
+
+policy:
+  allow_implicit_invocation: true
