@@ -9,6 +9,7 @@ description: >
   lower reasoning strength than Luna; prefer exact searches, few file reads,
   simple reference tracing, and mechanical evidence gathering.
 model: "deepseek-v4-flash"
+provider: "codex"
 settings:
   modeId: "default"
 developer_instructions: |
@@ -45,6 +46,7 @@ description: >
   slower, has roughly 258K tokens of context, and has higher reasoning
   strength than DeepSeek; use it for thorough source tracing and synthesis.
 model: "gpt-5.6-luna"
+provider: "codex"
 settings:
   modeId: "auto"
   thinkingOptionId: "max"
