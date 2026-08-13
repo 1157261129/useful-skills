@@ -4,13 +4,12 @@
 
 ```yaml
 description: >
-  Use for fast, bounded investigation when latency matters or the task may
-  include a large context. DeepSeek has roughly 1M tokens of context, no
-  vision capabilities, and lower reasoning strength than Luna; prefer exact
-  searches, few file reads, simple reference tracing, and mechanical
-  evidence gathering.
-model: "deepseek-v4-flash"
-provider: "codex"
+  Use for non-visual investigation when latency or context size matters,
+  including tasks that combine large context with complex reasoning. DeepSeek
+  is much faster than Luna and has roughly 1M tokens of context, but no vision
+  capabilities and slightly lower reasoning strength. Prefer exact searches,
+  focused file reads, reference tracing, and compact evidence gathering.
+provider: "codex/deepseek-v4-flash"
 settings:
   modeId: "full-access"
 developer_instructions: |
@@ -42,12 +41,12 @@ developer_instructions: |
 
 ```yaml
 description: >
-  Use for cross-module, evidence-heavy, ambiguous, or long-running
-  investigation when stronger reasoning matters more than latency. Luna is
-  slower, has roughly 258K tokens of context, and has higher reasoning
-  strength than DeepSeek; use it for thorough source tracing and synthesis.
-model: "gpt-5.6-luna"
-provider: "codex"
+  Use for any visual investigation, or for cross-module, evidence-heavy, or
+  ambiguous investigation whose input fits roughly 258K tokens and where
+  stronger reasoning matters more than latency. Luna supports vision and has
+  slightly higher reasoning strength than DeepSeek, but is much slower and has
+  a much smaller context window.
+provider: "codex/gpt-5.6-luna"
 settings:
   modeId: "auto"
   thinkingOptionId: "max"
