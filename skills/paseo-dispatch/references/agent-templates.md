@@ -5,9 +5,10 @@
 ```yaml
 description: >
   Use for fast, bounded investigation when latency matters or the task may
-  include a large context. DeepSeek has roughly 1M tokens of context and
-  lower reasoning strength than Luna; prefer exact searches, few file reads,
-  simple reference tracing, and mechanical evidence gathering.
+  include a large context. DeepSeek has roughly 1M tokens of context, no
+  vision capabilities, and lower reasoning strength than Luna; prefer exact
+  searches, few file reads, simple reference tracing, and mechanical
+  evidence gathering.
 model: "deepseek-v4-flash"
 provider: "codex"
 settings:
