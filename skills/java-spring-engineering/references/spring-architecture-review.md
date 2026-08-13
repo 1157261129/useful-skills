@@ -1,8 +1,3 @@
----
-name: spring-architecture-review
-description: Reviews Spring or Java application architecture for package structure, module boundaries, dependency direction, layering, and framework coupling. Use when reviewing Spring project structure, clean or hexagonal architecture, package organization, module ownership, or cross-layer dependency changes.
----
-
 # Spring Architecture Review
 
 Review Java/Spring macro structure before local code style. Focus on ownership, boundaries, and dependency direction.
@@ -40,4 +35,4 @@ Why it matters: [architecture impact]
 Minimal fix: [move, invert dependency, rename package, or introduce existing abstraction]
 ```
 
-See [EXAMPLES.md](EXAMPLES.md) for Java/Spring architecture examples.
+See [spring-architecture-review-examples.md](spring-architecture-review-examples.md) for Java/Spring architecture examples.

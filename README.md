@@ -12,28 +12,13 @@ Each skill directory name must match the `name` field in its `SKILL.md` frontmat
 
 ## Available Skills
 
-### Java Skills
+### Java/Spring Engineering
 
 | Skill | Description |
 |-------|-------------|
-| `java-clean-code` | Improves Java code readability and maintainability through naming, small functions, DRY, KISS, YAGNI, and focused refactoring |
-| `java-code-review` | Performs systematic Java code review for correctness, null safety, exceptions, collections, resources, APIs, concurrency, performance, and tests |
-| `java-concurrency-review` | Reviews Java or Spring concurrency for thread safety, race conditions, deadlocks, async boundaries, executor use, virtual threads, and CompletableFuture behavior |
-| `java-design-patterns` | Applies Java design patterns pragmatically, including Builder, Factory, Strategy, Observer, Template Method, Decorator, and Adapter |
-| `java-performance-smell-detection` | Detects Java code-level performance smells in strings, streams, boxing, regex, collections, allocation, caching, and hot-path control flow |
-| `java-solid-principles` | Reviews and applies SOLID principles in Java class design, responsibilities, extension points, substitutability, interfaces, and dependency direction |
-| `java-test-quality` | Improves Java test quality with JUnit 5, AssertJ, Mockito, fixtures, parameterized tests, integration scope, coverage judgment, and maintainable assertions |
-| `maven-dependency-audit` | Audits Java Maven dependencies for outdated versions, vulnerabilities, unused dependencies, transitive conflicts, plugin drift, and release risk |
+| `java-spring-engineering` | Progressive Java/Spring guidance for implementation, review, tests, concurrency, performance, architecture, REST contracts, and security |
 
-### Spring Framework Skills
-
-| Skill | Description |
-|-------|-------------|
-| `spring-architecture-review` | Reviews Spring or Java application architecture for package structure, module boundaries, dependency direction, layering, and framework coupling |
-| `spring-boot-patterns` | Guides Java Spring Boot controllers, services, repositories, DTOs, validation, exception handling, configuration, transactions, and tests |
-| `spring-contract-review` | Reviews Spring REST API contracts for HTTP semantics, versioning, compatibility, DTO boundaries, status codes, and error formats |
-| `spring-logging-patterns` | Guides Spring or Java bilingual Chinese-English logging with SLF4J, structured fields, log levels, MDC, request correlation, and safe exception logging |
-| `spring-security-audit` | Audits Spring or Java application security across validation, injection, authn/authz, secrets, deserialization, dependencies, headers, CSRF, XSS, and logging |
+The canonical skill routes each task to one primary reference and loads specialist rules or examples only when the code requires them. The following names remain short compatibility aliases for explicit requests only: `java-clean-code`, `java-code-review`, `java-test-quality`, and `spring-boot-patterns`.
 
 ### General Skills
 
@@ -54,10 +39,16 @@ Install all skills from GitHub:
 npx skills@latest add 1157261129/useful-skills --all
 ```
 
-Install selected skills only:
+Install the canonical Java/Spring skill:
 
 ```bash
-npx skills@latest add 1157261129/useful-skills --skill java-code-review spring-security-audit
+npx skills@latest add 1157261129/useful-skills --skill java-spring-engineering
+```
+
+Install a compatibility alias only when an existing prompt explicitly names it:
+
+```bash
+npx skills@latest add 1157261129/useful-skills --skill java-code-review
 ```
 
 Each skill contains `SKILL.md` and may additionally include:
@@ -68,6 +59,8 @@ Each skill contains `SKILL.md` and may additionally include:
 - **scripts/** - Supporting scripts (optional)
 - **references/** - Supporting reference material (optional)
 - **assets/** - Supporting assets (optional)
+
+`java-spring-engineering` keeps domain rules and examples under `references/` for progressive discovery. Do not load all reference files by default.
 
 ## Issue Execution Notes
 

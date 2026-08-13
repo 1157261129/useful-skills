@@ -1,8 +1,3 @@
----
-name: java-concurrency-review
-description: Reviews Java or Spring concurrency for thread safety, race conditions, deadlocks, async boundaries, executor use, virtual threads, and CompletableFuture behavior. Use when Java/Spring code uses threads, locks, shared mutable state, @Async, schedulers, CompletableFuture, parallel streams, or virtual threads.
----
-
 # Java Concurrency Review
 
 Treat Java/Spring concurrency bugs as correctness issues first. Prefer evidence, simple ownership, and bounded execution.
@@ -36,4 +31,4 @@ Treat Java/Spring concurrency bugs as correctness issues first. Prefer evidence,
 
 Classify as likely bug, load risk, or maintainability risk. Include the interleaving or thread path when reporting a race.
 
-See [EXAMPLES.md](EXAMPLES.md) for Java/Spring concurrency examples.
+See [java-concurrency-review-examples.md](java-concurrency-review-examples.md) for Java/Spring concurrency examples.

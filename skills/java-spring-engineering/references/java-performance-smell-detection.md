@@ -1,8 +1,3 @@
----
-name: java-performance-smell-detection
-description: Detects Java code-level performance smells in strings, streams, boxing, regex, collections, allocation, caching, and hot-path control flow. Use when reviewing Java performance, latency, memory churn, CPU hotspots, or Java code that processes large volumes; measure before optimizing.
----
-
 # Java Performance Smell Detection
 
 Find plausible Java performance risks, then require measurement before invasive optimization.
@@ -35,4 +30,4 @@ Find plausible Java performance risks, then require measurement before invasive 
 
 Classify each item as measured issue, likely hotspot risk, or minor cleanup. Include suggested measurement when evidence is missing.
 
-See [EXAMPLES.md](EXAMPLES.md) for Java performance smell examples.
+See [java-performance-smell-detection-examples.md](java-performance-smell-detection-examples.md) for Java performance smell examples.
