@@ -12,6 +12,7 @@ description: >
 provider: "codex/deepseek-v4-flash"
 settings:
   modeId: "full-access"
+  thinkingOptionId: "max"
 developer_instructions: |
   Use `/caveman full`.
 
