@@ -12,7 +12,7 @@ Delegate read-only investigation. Keep decisions, implementation, and the final 
 1. Read the companion `paseo` skill and [agent-templates.md](references/agent-templates.md).
 2. Match the task against every template `description` and select the closest fit.
 3. Read `~/.paseo/orchestration-preferences.json`. If it is missing, tell the user once and continue; missing preferences never make a fixed template provider unavailable. Apply relevant freeform preferences to the prompt, but do not replace the template's explicit `provider` or `settings`.
-4. Call `inspect_provider` with the template's complete `provider` value and `settings`, then confirm the provider is available, its `modeId` is current, and `thinkingOptionId: "max"` is actually exposed and accepted. The `provider` value already contains the internal model ID; a model missing from `list_models` is not evidence that the model is unavailable. For DeepSeek, missing or unconfirmed `max` is a hard configuration failure: do not create the agent or continue at an unknown/default thinking strength.
+4. Call `inspect_provider` with the template's complete `provider` value and `settings`, then confirm the provider is available and its `modeId` is current. Request `thinkingOptionId: "max"` when supported. If Paseo does not expose or confirm the option, remove only `thinkingOptionId` and continue with the same DeepSeek provider; report that the actual strength is unknown/default. The `provider` value already contains the internal model ID; a model missing from `list_models` is not evidence that the model is unavailable.
 5. Confirm the task is bounded, read-only, dependency-ready, and non-duplicate.
 
 Keep implementation, edits, decisions, and external side effects in the primary agent.
@@ -40,9 +40,9 @@ Dispatch through Paseo with at most three agents active. Continue independent pr
 
 Create the agent with the selected template's explicit `provider` and `settings`. Pass the `provider/model` pair as the single `provider` value required by `create_agent`; for example, `fast-investigator` uses `provider: "codex/deepseek-v4-flash"`. Keep that value even when DeepSeek is absent from Paseo's Codex model catalog because Codex may resolve custom model IDs from its own configuration.
 
-If the Codex provider is unavailable, stop and report the provider failure because both templates require it. A missing DeepSeek entry in `list_models` is not a failure and consumes no attempt. A DeepSeek provider that does not expose or accept `thinkingOptionId: "max"` is unavailable for this skill and must be reported without silent downgrade.
+If the Codex provider is unavailable, stop and report the provider failure because both templates require it. A missing DeepSeek entry in `list_models` is not a failure and consumes no attempt. If DeepSeek does not expose or accept `thinkingOptionId: "max"`, retry the same DeepSeek dispatch without that setting; never switch models solely because Paseo cannot set the strength.
 
-For `fast-investigator`, count provider, mode, or settings validation errors and agent creation or initial-run errors as failed DeepSeek attempts. Make the initial attempt plus at most three retries, for four attempts total. Do not retry a deterministic capability failure where inspection still omits or rejects `max`; record it and proceed to the documented fallback instead.
+For `fast-investigator`, count provider, mode, or settings validation errors and agent creation or initial-run errors as failed DeepSeek attempts. Make the initial attempt plus at most three retries, for four attempts total. A deterministic `max` capability gap gets one immediate retry with `thinkingOptionId` omitted and does not trigger model fallback.
 
 After every retryable failure:
 
@@ -52,10 +52,10 @@ After every retryable failure:
 If fewer than four attempts have failed, continue with the next attempt:
 
 1. Call `inspect_provider` with the selected fast template's complete `provider` and the failed attempt's settings.
-2. Change only `modeId`, `thinkingOptionId`, or supported `features` when the error and inspection identify a valid correction; `thinkingOptionId` must remain exactly `"max"`. Otherwise reuse the latest validated settings.
-3. Keep the provider, investigation prompt, and task scope unchanged, then create a new DeepSeek agent. Verify the created agent retains `thinkingOptionId: "max"`; otherwise classify the attempt as a settings failure and do not treat it as a valid DeepSeek dispatch.
+2. Change only `modeId`, `thinkingOptionId`, or supported `features` when the error and inspection identify a valid correction. If `max` is unsupported, omit only `thinkingOptionId`; otherwise reuse the latest validated settings.
+3. Keep the provider, investigation prompt, and task scope unchanged, then create a new DeepSeek agent. Verify the created agent retains the requested setting when Paseo supports it; if the setting was omitted after capability inspection, accept DeepSeek and report the resulting unknown/default strength.
 
-After the fourth failure, or immediately after a deterministic DeepSeek `max` capability failure, call `inspect_provider` with the complete `deep-investigator` provider and settings, then fall back to Luna once with those validated values and the same investigation prompt. Report the DeepSeek failure(s), explicitly state that the fallback is a non-DeepSeek path, and include Luna's provider and `thinkingOptionId`. If Luna validation or execution fails, preserve its error and stop without another fallback.
+After the fourth retryable failure, call `inspect_provider` with the complete `deep-investigator` provider and settings, then fall back to Luna once with those validated values and the same investigation prompt. Do not use this fallback for a DeepSeek thinking-setting capability gap. Report any fallback as a non-DeepSeek path and include Luna's provider and `thinkingOptionId`. If Luna validation or execution fails, preserve its error and stop without another fallback.
 
 When the next primary step depends on an active agent, stop and wait for its terminal notification. Let the notification resume the primary agent; use neither polling nor heartbeats.
 

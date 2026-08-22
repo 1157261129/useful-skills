@@ -7,7 +7,8 @@ description: >
   Use for non-visual investigation when latency or context size matters,
   including tasks that combine large context with complex reasoning. DeepSeek
   is much faster than Luna and has roughly 1M tokens of context, but no vision
-  capabilities and slightly lower reasoning strength. Prefer exact searches,
+  capabilities and slightly lower reasoning strength. Request max reasoning
+  when Paseo exposes it; otherwise keep DeepSeek with its default. Prefer exact searches,
   focused file reads, reference tracing, and compact evidence gathering.
 provider: "codex/deepseek-v4-flash"
 settings:
