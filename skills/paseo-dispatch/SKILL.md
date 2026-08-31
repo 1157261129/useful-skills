@@ -5,23 +5,25 @@ description: Dispatch bounded, parallel, read-only investigations through Paseo-
 
 # Paseo Dispatch
 
-Delegate read-only investigation. Keep decisions, implementation, and the final response in the primary agent.
+Delegate bounded, read-only investigations. Keep decisions, implementation, and the final response in the primary agent.
 
 ## Prepare
 
 1. Read the companion `paseo` skill and [agent-templates.md](references/agent-templates.md).
-2. Match the task against every template `description` and select the closest fit.
-3. Read `~/.paseo/orchestration-preferences.json`. If it is missing, tell the user once and continue; missing preferences never make a fixed template provider unavailable. Apply relevant freeform preferences to the prompt, but do not replace the template's explicit `provider` or `settings`.
-4. Call `inspect_provider` with the template's complete `provider` value and `settings`, then confirm the provider is available and its `modeId` is current. Request `thinkingOptionId: "max"` when supported. If Paseo does not expose or confirm the option, remove only `thinkingOptionId` and continue with the same DeepSeek provider; report that the actual strength is unknown/default. The `provider` value already contains the internal model ID; a model missing from `list_models` is not evidence that the model is unavailable.
-5. Confirm the task is bounded, read-only, dependency-ready, and non-duplicate.
+2. Match the task against every template `description`; select the closest fit.
+3. Read `~/.paseo/orchestration-preferences.json`. If it is missing, tell the user once and continue. Apply relevant freeform preferences to the prompt; use explicit provider/model preferences only as availability-checked tie-breakers.
+4. Resolve the launch target from Paseo's current configuration:
+   - Call `list_profiles`; read every profile's `notes`. Use a user-named profile, otherwise the best match, and copy its `provider`, `model`, `modeId`, `thinkingOptionId`, and `featureValues` into the launch values. If no profile fits or none is configured, tell the user once and continue discovery.
+   - Call `list_providers`; keep providers with `status: "available"`. Call `list_models` for candidates as needed. Filter models and modes against the selected template's criteria. Honor explicit preferences, then a model marked `isDefault`; if one candidate remains, use it. If the target is ambiguous or no usable target exists, stop and report it—never guess.
+   - Pass the exact provider/model pair to `create_agent` as `<provider>/<model ID>`. Use IDs returned by Paseo, not display labels or placeholders.
+5. Call `inspect_provider` with the complete resolved provider and settings; pass the current `cwd` when the call is not agent-scoped. Confirm the target is available and its mode is current. Preserve explicit profile settings; choose provider-supported defaults for missing fields, and omit unknown fields rather than inventing IDs. Use `list_models` when `inspect_provider` does not expose model or thinking options. Request `thinkingOptionId: "max"` when the model exposes and accepts it; otherwise omit only that setting and report the resulting default/unknown strength.
+6. Confirm the task is bounded, read-only, dependency-ready, and non-duplicate.
 
 Keep implementation, edits, decisions, and external side effects in the primary agent.
 
 ## Build the Prompt
 
-Send a complete, self-contained plaintext prompt directly to the agent. Include
-the selected template's `developer_instructions` as the worker's standing
-role and boundary instructions.
+Send a complete, self-contained plaintext prompt directly to the agent. Include the selected template's `developer_instructions` as the worker's standing role and boundary instructions.
 
 Include every section:
 
@@ -38,24 +40,19 @@ Include every section:
 
 Dispatch through Paseo with at most three agents active. Continue independent primary-agent work.
 
-Create the agent with the selected template's explicit `provider` and `settings`. Pass the `provider/model` pair as the single `provider` value required by `create_agent`; for example, `fast-investigator` uses `provider: "codex/deepseek-v4-flash"`. Keep that value even when DeepSeek is absent from Paseo's Codex model catalog because Codex may resolve custom model IDs from its own configuration.
+Create the agent with the resolved provider/model pair and validated settings. Template selection fields are criteria, not literal launch values. Do not hardcode a provider/model or silently bypass runtime resolution.
 
-If the Codex provider is unavailable, stop and report the provider failure because both templates require it. A missing DeepSeek entry in `list_models` is not a failure and consumes no attempt. If DeepSeek does not expose or accept `thinkingOptionId: "max"`, retry the same DeepSeek dispatch without that setting; never switch models solely because Paseo cannot set the strength.
-
-For `fast-investigator`, count provider, mode, or settings validation errors and agent creation or initial-run errors as failed DeepSeek attempts. Make the initial attempt plus at most three retries, for four attempts total. A deterministic `max` capability gap gets one immediate retry with `thinkingOptionId` omitted and does not trigger model fallback.
+For `fast-investigator`, count provider, mode, settings validation, agent creation, and initial-run errors as failed attempts. Make the initial attempt plus at most three retries.
 
 After every retryable failure:
 
 1. Preserve and classify the error.
-2. If creation returned an agent, wait for its terminal error notification and archive it. Proceed immediately when validation failed before creation.
+2. If an agent was created, wait for its terminal error notification and archive it. Proceed immediately when validation failed before creation.
+3. If fewer than four attempts have failed, call `inspect_provider` again for the same resolved provider/model and failed attempt's settings.
+4. Change only `modeId`, `thinkingOptionId`, or supported `features` when the error and inspection identify a valid correction; otherwise reuse the latest validated settings.
+5. Keep the provider/model, investigation prompt, and task scope unchanged, then create the retry. A `max` capability gap gets one immediate retry omitting only `thinkingOptionId`; it does not switch targets.
 
-If fewer than four attempts have failed, continue with the next attempt:
-
-1. Call `inspect_provider` with the selected fast template's complete `provider` and the failed attempt's settings.
-2. Change only `modeId`, `thinkingOptionId`, or supported `features` when the error and inspection identify a valid correction. If `max` is unsupported, omit only `thinkingOptionId`; otherwise reuse the latest validated settings.
-3. Keep the provider, investigation prompt, and task scope unchanged, then create a new DeepSeek agent. Verify the created agent retains the requested setting when Paseo supports it; if the setting was omitted after capability inspection, accept DeepSeek and report the resulting unknown/default strength.
-
-After the fourth retryable failure, call `inspect_provider` with the complete `deep-investigator` provider and settings, then fall back to Luna once with those validated values and the same investigation prompt. Do not use this fallback for a DeepSeek thinking-setting capability gap. Report any fallback as a non-DeepSeek path and include Luna's provider and `thinkingOptionId`. If Luna validation or execution fails, preserve its error and stop without another fallback.
+After the fourth retryable failure, resolve and validate a fresh `deep-investigator` target using the same runtime rules. Reuse the investigation goal, scope, and acceptance criteria, but rebuild the worker prompt with the deep template's `developer_instructions`; dispatch it once. Report its provider/model and `thinkingOptionId`. If resolution, validation, or execution fails, preserve the error and stop without another fallback.
 
 When the next primary step depends on an active agent, stop and wait for its terminal notification. Let the notification resume the primary agent; use neither polling nor heartbeats.
 
