@@ -25,10 +25,6 @@ The canonical skill routes each task to one primary reference and loads speciali
 | Skill | Description |
 |-------|-------------|
 | `conventional-commit` | Drafts and validates Git commit messages that follow the Conventional Commits specification and use Chinese as the primary commit language |
-| `grill-me` | Runs a relentless interview to sharpen a plan or design |
-| `grill-with-docs` | Runs a plan or design interview while creating ADRs and a glossary |
-| `improve-codebase-architecture` | Scans a codebase for deepening opportunities and presents an architecture report |
-| `setup-matt-pocock-skills` | Configures issue tracking, triage labels, and domain documentation for engineering skills |
 | `write-a-prompt` | Generates focused prompts for vibe-coding and coding-agent sessions from a concrete software task |
 
 ## Install
@@ -65,5 +61,3 @@ Each skill contains `SKILL.md` and may additionally include:
 ## Imported Skills
 
 The Java review and pattern skills are adapted from [`decebals/claude-code-java`](https://github.com/decebals/claude-code-java), `.claude/skills`, under the MIT License, Copyright (c) 2026 Decebal Suiu.
-
-The `grill-me`, `grill-with-docs`, `improve-codebase-architecture`, and `setup-matt-pocock-skills` skills are imported from [`mattpocock/skills`](https://github.com/mattpocock/skills), commit `c55ee46073ed923f86ce59a5eb3b6d895095d1b7`.
