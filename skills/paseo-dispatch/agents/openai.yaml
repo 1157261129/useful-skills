@@ -1,0 +1,7 @@
+interface:
+  display_name: "Paseo Dispatch"
+  short_description: "Delegate document and data dictionary reading to GPT-6-Luna"
+  default_prompt: "Use $paseo-dispatch to delegate document and data dictionary extraction to a GPT-6-Luna reader."
+
+policy:
+  allow_implicit_invocation: true

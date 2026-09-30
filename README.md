@@ -15,6 +15,7 @@ Each skill directory name must match the `name` field in its `SKILL.md` frontmat
 | Skill | Description |
 |-------|-------------|
 | `conventional-commit` | Drafts and validates Git commit messages that follow the Conventional Commits specification and use Chinese as the primary commit language |
+| `paseo-dispatch` | Dispatches read-only document and data dictionary extraction to GPT-6-Luna subagents through Paseo |
 | `write-a-prompt` | Generates focused prompts for vibe-coding and coding-agent sessions from a concrete software task |
 
 ## Install
